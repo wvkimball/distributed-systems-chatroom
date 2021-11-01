@@ -22,9 +22,8 @@ def main():
 
     while True:
         data, address = server_socket.recvfrom(buffer_size)
-        print('Received message from client: ', address)
         message = data.decode()
-        print('Message: ', data.decode())
+        print('Received message {} from client {}'.format(message, address))
 
         if data:
             send_message('#*#RECEIVED', address)
@@ -36,12 +35,14 @@ def main():
             broadcast(message, address)
 
 
-# TODO: implement a command for a client to be removed from the list
 def server_command(command, address):
     match command:
         case 'JOIN':
             clients.append(address)
             send_message('Welcome to the chat!', address)
+        case 'EXIT':
+            clients.remove(address)
+            send_message('#*#EXIT', address)
 
 
 # Loops through all clients and sends the message to all but the sender

@@ -2,6 +2,7 @@
 
 import socket
 import threading
+import sys
 
 # Create a UDP socket
 client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -13,8 +14,6 @@ server_port = 10001
 # Buffer size
 buffer_size = 1024
 
-# TODO: Get a 'You: ' prompt to play nice with the two threads
-
 
 # Function to handle receiving messages from the server
 def receive():
@@ -23,19 +22,20 @@ def receive():
         if data:
             response = data.decode()
             if response[0:3] == '#*#':
-                client_command(response[3:])
+                client_command(response[3:], True)
             else:
                 print('\r' + response)
+                print('You: ', end='')
 
 
 # Function to handle sending messages to the server
 def transmit():
     while True:
-        message = input('')
-        if message == "EXIT":
-            break
+        message = input('\rYou: ')
         # Send message
         client_socket.sendto(message.encode(), (server_address, server_port))
+        if message[0:3] == '#*#':
+            client_command(message[3:], False)
 
 
 def main():
@@ -48,15 +48,16 @@ def main():
 
     finally:
         pass
-        # client_socket.close()
-        # print('Socket closed')
 
 
 # This can be used to implement specific chat commands
-def client_command(command):
+def client_command(command, from_server):
     match command:
-        case _:
-            pass
+        case 'EXIT':
+            if from_server:
+                print('Goodbye!')
+                client_socket.close()
+            sys.exit(0)
 
 
 if __name__ == '__main__':
