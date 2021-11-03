@@ -85,8 +85,7 @@ def broadcast_listener():
         data, address = listener_socket.recvfrom(1024)  # wait for a packet
         if data.startswith(utility.broadcast_code.encode()):
             print("Received broadcast from", address[0])
-            if is_leader:
-                send_message(utility.response_code + address[0], address)
+            send_message(utility.response_code + address[0], address)
 
 
 # Function that receives a message and either distributes it to the clients or handles it as a command
@@ -103,10 +102,13 @@ def manage_chat():
             distribute_to_clients(message, address)
 
 
+# TODO: This is bad and I feel bad for having written it. I'll rewrite this soon
 # Handles commands sent to the server
 # Pattern matching is awesome, and it's worth updating python just to have it
 def server_command(command, address):
     match command.split('#*#'):
+        case ['JOIN', add_client_ip, add_client_port]:
+            pass  # To be used when I rewrite this method
         case ['JOIN']:  # Request from a client to join the server's chatroom
             add_client(address)
         case ['EXIT']:  # Request from a client to be removed from the chatroom
@@ -114,6 +116,8 @@ def server_command(command, address):
             send_message('#*#EXIT', address)
             distribute_to_clients('{} has left the chat'.format(address[0]), address, True)
             distribute_to_servers('#*#REMOVE-CLIENT#*#{}#*#{}'.format(address[0], address[1]))
+        case ['SERV', add_server_ip, add_server_port]:
+            pass  # To be used when I rewrite this method
         case ['SERV']:  # Request from a server to be added to the server pool
             add_server(address)
         case ['ADD-CLIENT', add_client_ip, add_client_port]:  # Command from the leader to add a client
@@ -135,24 +139,36 @@ def server_command(command, address):
                 print('Command from {} to remove unknown client {}'.format(address, client_to_remove))
                 print('Requesting update')
                 send_message('#*#REQUEST-UPDATE', address)
-        case ['REQUEST-UPDATE']:  # Update all servers with what we know
-            update_servers()
+        case ['REQUEST-UPDATE']:  # If I'm the leader, update all servers with what we know
+            if is_leader:
+                update_servers()
         case ['CLEAR']:  # Clear our clients and servers. This should only be done before an update
             print('!!! clients and servers have been cleared !!!')
             clients.clear()
             servers.clear()
-        case ['HEARTBEAT']:
-            global last_leader_heartbeat
-            last_leader_heartbeat = time()
+        case ['HEARTBEAT']:  # If the leader is getting heartbeats something is wrong
+            if is_leader or address != leader_address:
+                distribute_to_servers('#*#REQUEST-UPDATE')
+            else:
+                update_last_leader_heartbeat()
+        case ['LEADER']:
+            if address != leader_address:
+                set_leader(address)
+                print(address, 'has declared itself leader')
+                update_last_leader_heartbeat()
 
 
 # Adds a client to our list and tells the other servers about it
+# If not the leader, request an update
 def add_client(address):
     clients.add(address)
     print('{} added to clients'.format(address))
-    send_message('Welcome to the chat!', address)
-    distribute_to_clients('{} has joined the chat'.format(address[0]), address, True)
     distribute_to_servers('#*#ADD-CLIENT#*#{}#*#{}'.format(address[0], address[1]))
+    if is_leader:
+        send_message('Welcome to the chat!', address)
+        distribute_to_clients('{} has joined the chat'.format(address[0]), address, True)
+    else:
+        distribute_to_servers('#*#REQUEST-UPDATE')
 
 
 # Adds a server to our list and updates servers, so that the new server has everything
@@ -164,11 +180,13 @@ def add_server(address):
 
 # Sends information on all clients and servers to all servers
 def update_servers():
-    print('Updating servers')
+    print('Updating clients/servers')
+    distribute_to_clients('#*#SERV', server_message=True)
     for client in clients:
         distribute_to_servers('#*#ADD-CLIENT#*#{}#*#{}'.format(client[0], client[1]), False)
     distribute_to_servers('#*#ADD-SERVER#*#{}#*#{}'.format(server_ip, server_port), False)
     for server in servers:
+        distribute_to_servers('#*#LEADER'.format(server[0], server[1]), False)
         distribute_to_servers('#*#ADD-SERVER#*#{}#*#{}'.format(server[0], server[1]), False)
 
 
@@ -205,15 +223,22 @@ def heartbeat():
             if time() - last_leader_heartbeat >= 5:
                 print('Last leader heartbeat is more than 5 seconds ago')
                 next_leader()
-                sleep(2)  # Give the new leader a chance to start sending heartbeats
+                update_last_leader_heartbeat()  # Give the new leader a chance to start sending heartbeats
             sleep(1)
 
 
+def update_last_leader_heartbeat():
+    global last_leader_heartbeat
+    last_leader_heartbeat = time()
+
+
+# TODO: replace with a proper leader election algorithm
 def next_leader():
     servers.remove(leader_address)
     set_leader(min({server_address}.union(servers)))
     print('The new leader should be', leader_address)
     if is_leader:
+        distribute_to_servers('#*#LEADER')
         distribute_to_clients('#*#SERV', server_message=True)
 
 
