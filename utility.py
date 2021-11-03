@@ -2,14 +2,13 @@
 # Anything that would be repeated in both the server and the client code can/will go here
 import socket
 
-broadcast_port = 10002
-buffer_size = 1024
-
+# Constants
+BROADCAST_PORT = 10002
+BUFFER_SIZE = 1024
 # Random code to broadcast / listen for to filter out other network traffic
-broadcast_code = '9310e231f20a07cb53d96b90a978163d'
-
+BROADCAST_CODE = '9310e231f20a07cb53d96b90a978163d'
 # Random code to respond with
-response_code = 'f56ddd73d577e38c45769dcd09dc9d99'
+RESPONSE_CODE = 'f56ddd73d577e38c45769dcd09dc9d99'
 
 
 # source: https://stackoverflow.com/questions/166506/finding-local-ip-addresses-using-pythons-stdlib
@@ -24,3 +23,10 @@ def get_ip():
     finally:
         s.close()
     return IP
+
+
+def transmit_message(message, address):
+    transmit_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    transmit_socket.connect(address)
+    transmit_socket.send(message.encode())
+    transmit_socket.close()
