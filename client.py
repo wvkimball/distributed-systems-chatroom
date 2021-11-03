@@ -1,18 +1,62 @@
+#!/usr/bin/env python3.10
 # Initial Source: https://github.com/digitalhhz/DSTutorial_Programmierprojekt/blob/master/simpleclient.py
 
 import socket
 import threading
 import sys
+import utility
+from time import sleep
+
+# Get this clients IP address
+client_address = utility.get_ip()
 
 # Create a UDP socket
 client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-# Bind the socket to the port
-server_address = '127.0.0.1'
-server_port = 10001
+# Create global variables which will be set by server response
+server_address = ''
+server_port = 0
 
 # Buffer size
-buffer_size = 1024
+buffer_size = utility.buffer_size
+
+
+def main():
+    broadcast_sender()
+
+    client_socket.sendto('#*#JOIN'.encode(), (server_address, server_port))
+
+    threading.Thread(target=receive).start()
+    threading.Thread(target=transmit).start()
+
+
+def broadcast_sender():
+    broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # create UDP socket
+    broadcast_socket.bind((client_address, 0))
+    broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)  # this is a broadcast socket
+    broadcast_socket.settimeout(2)
+
+    while True:
+        broadcast_socket.sendto(utility.broadcast_code.encode(), ('<broadcast>', utility.broadcast_port))
+        print("Looking for server")
+
+        # Wait for a response packet. If no packet has been received in 2 seconds, sleep then broadcast again
+        try:
+            data, address = broadcast_socket.recvfrom(1024)
+            if data.startswith(utility.response_code.encode()):
+                print("Found server at", address[0])
+                set_server_address(address)
+                break
+        except TimeoutError:
+            sleep(3)
+
+    broadcast_socket.close()
+
+
+def set_server_address(address):
+    global server_address, server_port
+    server_address = address[0]
+    server_port = address[1]
 
 
 # Function to handle receiving messages from the server
@@ -25,7 +69,7 @@ def receive():
                 client_command(response[3:], True)
             else:
                 print('\r' + response)
-                print('You: ', end='')
+                print('\rYou: ', end='')
 
 
 # Function to handle sending messages to the server
@@ -38,24 +82,12 @@ def transmit():
             client_command(message[3:], False)
 
 
-def main():
-    try:
-
-        client_socket.sendto('#*#JOIN'.encode(), (server_address, server_port))
-
-        threading.Thread(target=receive).start()
-        threading.Thread(target=transmit).start()
-
-    finally:
-        pass
-
-
 # This can be used to implement specific chat commands
 def client_command(command, from_server):
     match command:
         case 'EXIT':
             if from_server:
-                print('Goodbye!')
+                print('\rGoodbye!')
                 client_socket.close()
             sys.exit(0)
 
