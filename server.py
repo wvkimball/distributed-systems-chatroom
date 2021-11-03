@@ -1,5 +1,4 @@
 #!/usr/bin/env python3.10
-# Initial Source: https://github.com/digitalhhz/DSTutorial_Programmierprojekt/blob/master/simpleserver.py
 
 import socket
 import threading
@@ -24,6 +23,7 @@ def main():
     threading.Thread(target=manage_chat).start()
 
 
+# Function to listen for broadcasts from clients and respond when a broadcast is heard
 def broadcast_listener():
     listener_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # create UDP socket
     listener_socket.bind(('', utility.broadcast_port))
@@ -32,7 +32,7 @@ def broadcast_listener():
         data, address = listener_socket.recvfrom(1024)  # wait for a packet
         if data.startswith(utility.broadcast_code.encode()):
             print("Received broadcast from", address[0])
-            send_message(utility.response_code, address)
+            send_message(utility.response_code + address[0], address)
 
 
 def manage_chat():

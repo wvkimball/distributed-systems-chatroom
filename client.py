@@ -1,5 +1,4 @@
 #!/usr/bin/env python3.10
-# Initial Source: https://github.com/digitalhhz/DSTutorial_Programmierprojekt/blob/master/simpleclient.py
 
 import socket
 import threading
@@ -43,7 +42,7 @@ def broadcast_sender():
         # Wait for a response packet. If no packet has been received in 2 seconds, sleep then broadcast again
         try:
             data, address = broadcast_socket.recvfrom(1024)
-            if data.startswith(utility.response_code.encode()):
+            if data.startswith((utility.response_code + client_address).encode()):
                 print("Found server at", address[0])
                 set_server_address(address)
                 break
@@ -53,6 +52,7 @@ def broadcast_sender():
     broadcast_socket.close()
 
 
+# Sets the global variables for server address and port
 def set_server_address(address):
     global server_address, server_port
     server_address = address[0]
