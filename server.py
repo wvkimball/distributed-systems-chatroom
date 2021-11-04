@@ -111,7 +111,7 @@ def heartbeat():
             try:
                 utility.tcp_transmit_message('#PING', neighbor)
                 sleep(0.2)
-            except ConnectionRefusedError:
+            except (ConnectionRefusedError, TimeoutError):
                 missed_beats += 1
             if missed_beats > 4:                                                      # Once 5 beats have been missed
                 print(f'{missed_beats} failed pings to neighbor, remove {neighbor}')  # print to console

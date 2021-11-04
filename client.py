@@ -79,7 +79,7 @@ def transmit_messages():
 def message_to_server(message):
     try:
         utility.tcp_transmit_message(message, server_address)
-    except ConnectionRefusedError:
+    except (ConnectionRefusedError, TimeoutError):
         print('\rError sending message, searching for server again')
         broadcast_for_server()
 
