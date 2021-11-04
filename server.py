@@ -31,6 +31,7 @@ neighbor = None
 
 
 def main():
+    utility.cls()
     startup_broadcast()
 
     threading.Thread(target=broadcast_listener).start()
@@ -257,8 +258,9 @@ def start_voting(address=server_address):
     global is_voting
     vote_for = min(address, server_address)
     if vote_for != server_address or not is_voting:
-        print(f'Voting for {vote_for}')
-        utility.tcp_transmit_message(f'#VOTE_{vote_for[0]}_{vote_for[1]}', neighbor)
+        message = f'#VOTE_{vote_for[0]}_{vote_for[1]}'
+        print(f'Send "{message}" to {vote_for}')
+        utility.tcp_transmit_message(message, neighbor)
     is_voting = True
 
 

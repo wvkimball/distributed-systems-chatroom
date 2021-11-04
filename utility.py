@@ -1,6 +1,7 @@
 #!/usr/bin/env python3.10
 # Anything that would be repeated in both the server and the client code can/will go here
 import socket
+import os
 
 # Constants
 BROADCAST_PORT = 10002
@@ -31,3 +32,7 @@ def tcp_transmit_message(message, address):
     transmit_socket.connect(address)
     transmit_socket.send(message.encode())
     transmit_socket.close()
+
+
+def cls():
+    os.system('cls' if os.name=='nt' else 'clear')

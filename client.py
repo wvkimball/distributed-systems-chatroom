@@ -23,6 +23,7 @@ server_address = (server_ip, server_port)
 
 
 def main():
+    utility.cls()
     broadcast_for_server()
 
     threading.Thread(target=transmit_messages).start()
