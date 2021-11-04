@@ -8,7 +8,7 @@ from time import time
 
 # Constants
 # Server connection data
-SERVER_IP = utility_temp.get_ip()
+SERVER_IP = utility.get_ip()
 SERVER_PORT = 10001
 SERVER_ADDRESS = (SERVER_IP, SERVER_PORT)
 
@@ -17,8 +17,9 @@ server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server_socket.bind(SERVER_ADDRESS)
 server_socket.listen()
 
-# List for clients
+# Lists for connected clients and servers
 clients = []
+servers = [SERVER_ADDRESS]
 
 
 def main():
@@ -28,42 +29,68 @@ def main():
 
 # Function to listen for broadcasts from clients and respond when a broadcast is heard
 def broadcast_listener():
-    listener_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # create UDP socket
-    listener_socket.bind(('', utility_temp.BROADCAST_PORT))
+    print('Server up and running at {}'.format(SERVER_IP))
 
-    print('Start listening for broadcasts')
+    listener_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # create UDP socket
+    listener_socket.bind(('', utility.BROADCAST_PORT))
+
     while True:
         data, address = listener_socket.recvfrom(BUFFER_SIZE)  # wait for a packet
-        if data.startswith(utility_temp.BROADCAST_CODE.encode()):
+        if data.startswith(utility.BROADCAST_CODE.encode()):
             print("Received broadcast from", address[0])
-            listener_socket.sendto(str.encode(f'{utility_temp.RESPONSE_CODE}_{address[0]}_{SERVER_PORT}'), address)
-
-
-def add_client(address):
-    # client = {'address': address, 'name': '', 'last_contact': time()}
-    clients.append(address)
+            # Respond with the response code, the IP we're responding to, and the the port we're listening with
+            listener_socket.sendto(str.encode(f'{utility.RESPONSE_CODE}_{address[0]}_{SERVER_PORT}'), address)
 
 
 def manage_chat():
     while True:
         client, address = server_socket.accept()
         message = client.recv(BUFFER_SIZE).decode()
-        print(f'Received {message} from {address}')
+        print(f'Received "{message}" from {address}')
 
         if message[0] == '#':
             server_command(message)
         else:
-            for client in clients:
-                if client[0] != address[0]:
-                    print(f'Send {message} to {client}')
-                    utility_temp.transmit_message(f'{address[0]}_{message}', client)
+            message_to_clients(message, address)
 
 
 def server_command(command):
     match command.split('_'):
-        case ['#JOIN', client_ip, client_port]:
+        # Add the provided client to this servers client list
+        # If the request came from the client (instead of another server) announce to the other clients
+        case ['#JOIN', 'client', from_client, client_ip, client_port]:
             print(f'Adding {(client_ip, client_port)} to clients')
-            add_client((client_ip, int(client_port)))
+            if from_client:
+                message_to_clients(f'{client_ip} has joined the chat', SERVER_ADDRESS)
+                message_to_servers(f'#JOIN_client_False_{client_ip}_{client_port}')
+            clients.append((client_ip, int(client_port)))
+        # Remove the provided client from this servers client list
+        # If the request came from the client (instead of another server) announce to the other clients
+        case ['#QUIT', 'client', from_client, client_ip, client_port]:
+            print(f'Removing {(client_ip, client_port)} from clients')
+            clients.remove((client_ip, int(client_port)))
+            if from_client:
+                utility.tcp_transmit_message(f'{SERVER_IP}_#QUIT', (client_ip, int(client_port)))
+                message_to_clients(f'{client_ip} has left the chat', SERVER_ADDRESS)
+                message_to_servers(f'#JOIN_client_False_{client_ip}_{client_port}')
+
+
+# Sends message to all clients, excluding the sender
+# If the message is "purely" a server message, then the server is the sender
+# and the message is sent to all clients
+def message_to_clients(message, sender):
+    for client in clients:
+        if client[0] != sender[0]:
+            print(f'Send "{message}" to {client}')
+            utility.tcp_transmit_message(f'{sender[0]}_{message}', client)
+
+
+# Sends message to all connected servers, other than this server
+def message_to_servers(message):
+    for server in servers:
+        if server[0] != SERVER_IP:
+            print(f'Send "{message}" to {server}')
+            utility.tcp_transmit_message(message, server)
 
 
 if __name__ == '__main__':

@@ -25,7 +25,7 @@ def get_ip():
     return IP
 
 
-def transmit_message(message, address):
+def tcp_transmit_message(message, address):
     transmit_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     transmit_socket.connect(address)
     transmit_socket.send(message.encode())
