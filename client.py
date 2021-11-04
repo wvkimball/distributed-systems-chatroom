@@ -7,12 +7,14 @@ from time import sleep
 
 # Constants
 CLIENT_IP = utility.get_ip()
-CLIENT_PORT = 10001
 
 # Create TCP socket for listening
 client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-client_socket.bind((CLIENT_IP, CLIENT_PORT))
+client_socket.bind((CLIENT_IP, 0))
 client_socket.listen()
+
+# Find listening port
+client_port = client_socket.getsockname()[1]
 
 # Create global variables which will be set by server response
 server_ip = ''
@@ -41,7 +43,7 @@ def broadcast_for_server():
         # Wait for a response packet. If no packet has been received in 2 seconds, sleep then broadcast again
         try:
             data, address = broadcast_socket.recvfrom(1024)
-            if data.startswith((utility.RESPONSE_CODE + '_' + CLIENT_IP).encode()):
+            if data.startswith(f'{utility.RESPONSE_CODE}_{CLIENT_IP}'.encode()):
                 message = data.decode().split('_')
                 print("Found server at", address[0])
                 set_server_address((address[0], int(message[2])))
@@ -57,12 +59,12 @@ def set_server_address(address: tuple):
     global server_ip, server_port, server_address
     server_ip, server_port = address
     server_address = address
-    # print('Server address set to', address)
+    print(f'\rServer address set to {address}\nYou: ', end='')
 
 
 # Function to handle sending messages to the server
 def transmit_messages():
-    message_to_server(f'#JOIN_client_True_{CLIENT_IP}_{CLIENT_PORT}')
+    message_to_server(f'#JOIN_client_1_{CLIENT_IP}_{client_port}')
 
     while True:
         message = input('\rYou: ')
@@ -70,28 +72,33 @@ def transmit_messages():
         if message[0] == '#':
             client_command(message)
         else:
-            message_to_server(message)
+            message_to_server(format_chat(message))
 
 
 # Sends a message to the server
 # Need to add better handling for when the server isn't there to receive the message
 def message_to_server(message):
-    try:
-        utility.tcp_transmit_message(message, server_address)
-    except ConnectionRefusedError:
-        print('Error sending message')
+    # try:
+    utility.tcp_transmit_message(message, server_address)
+    # except ConnectionRefusedError:
+    #    print('Error sending message')
+
+
+def format_chat(message):
+    return f'#CHAT_{CLIENT_IP}_{client_port}_{message}'
 
 
 # Function to handle receiving messages from the server
 def receive_messages():
     while True:
         client, address = client_socket.accept()
-        data = client.recv(BUFFER_SIZE).decode().split('_')
-        sender = data[0]
-        message = data[1]
-        if message[0] == '#':
-            server_command(message)
+        data = client.recv(BUFFER_SIZE).decode()
+        if data[0] == '#':
+            server_command(data)
         else:
+            data = data.split('_')
+            message = data[0]
+            sender = data[1]
             if sender == server_ip:
                 print(f'\r{message}')
             else:
@@ -103,7 +110,7 @@ def receive_messages():
 def client_command(command):
     match command.split('_'):
         case ['#QUIT']:
-            message_to_server(f'#QUIT_client_True_{CLIENT_IP}_{CLIENT_PORT}')
+            message_to_server(f'#QUIT_client_1_{CLIENT_IP}_{client_port}')
             sys.exit(0)
 
 
@@ -114,6 +121,8 @@ def server_command(command):
             print('\rGoodbye!')
             client_socket.close()
             sys.exit(0)
+        case ['#LEAD', ip, port]:
+            set_server_address((ip, int(port)))
 
 
 if __name__ == '__main__':
