@@ -161,7 +161,7 @@ def server_command(command):
             print(f'Removing {(ip, port)} from clients')
             clients.remove((ip, int(port)))
             if int(inform_others):
-                utility.tcp_transmit_message(f'{SERVER_IP}_#QUIT', (ip, int(port)))
+                utility.tcp_transmit_message(f'#QUIT', (ip, int(port)))
                 message_to_clients(f'{ip} has left the chat')
                 message_to_servers(f'#QUIT_client_0_{ip}_{port}')
         # Add the provided server to this server's servers list
@@ -233,6 +233,7 @@ def find_neighbor():
     length = len(servers)
     if length == 1:
         neighbor = None
+        print('I have no neighbor')
         return
     servers.sort()
     index = servers.index(server_address)

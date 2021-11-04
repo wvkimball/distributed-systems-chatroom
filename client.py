@@ -52,6 +52,7 @@ def broadcast_for_server():
             sleep(3)
 
     broadcast_socket.close()
+    message_to_server(f'#JOIN_client_1_{CLIENT_IP}_{client_port}')
 
 
 # Sets the server address which messages will be sent to
@@ -64,8 +65,6 @@ def set_server_address(address: tuple):
 
 # Function to handle sending messages to the server
 def transmit_messages():
-    message_to_server(f'#JOIN_client_1_{CLIENT_IP}_{client_port}')
-
     while True:
         message = input('\rYou: ')
         # Send message
@@ -76,12 +75,13 @@ def transmit_messages():
 
 
 # Sends a message to the server
-# Need to add better handling for when the server isn't there to receive the message
+# If the server isn't there, the client starts searching again
 def message_to_server(message):
-    # try:
-    utility.tcp_transmit_message(message, server_address)
-    # except ConnectionRefusedError:
-    #    print('Error sending message')
+    try:
+        utility.tcp_transmit_message(message, server_address)
+    except ConnectionRefusedError:
+        print('\rError sending message, searching for server again')
+        broadcast_for_server()
 
 
 def format_chat(message):
