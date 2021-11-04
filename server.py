@@ -38,6 +38,7 @@ def main():
     threading.Thread(target=heartbeat).start()
 
 
+# Broadcasts looking for another active server
 def startup_broadcast():
     broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # create UDP socket
     broadcast_socket.bind((SERVER_IP, 0))
@@ -46,7 +47,7 @@ def startup_broadcast():
 
     got_response = False
 
-    # 5 attempts are made to find another server / other servers
+    # 5 attempts are made to find another server
     # After this, the server assumes it is the only one and considers itself leader
     for i in range(0, 5):
         broadcast_socket.sendto(utility.BROADCAST_CODE.encode(), ('<broadcast>', utility.BROADCAST_PORT))
@@ -72,23 +73,8 @@ def startup_broadcast():
         set_leader(server_address)
 
 
-# Set the leader
-# If I'm the leader, tell the clients and other servers
-def set_leader(address):
-    global leader, is_leader, is_voting
-    leader = address
-    is_leader = server_address == address
-    is_voting = False
-    if is_leader:
-        print('I am the leader')
-        message = f'#LEAD_{SERVER_IP}_{server_port}'
-        message_to_clients(message)
-        message_to_servers(message)
-    else:
-        print(f'The leader is {leader}')
-
-
-# Function to listen for broadcasts from clients and respond when a broadcast is heard
+# Function to listen for broadcasts from clients/servers and respond when a broadcast is heard
+# Only the leader responds to broadcasts
 def broadcast_listener():
     print('Server up and running at {}'.format(server_address))
 
@@ -127,7 +113,7 @@ def heartbeat():
                 sleep(0.2)
             except ConnectionRefusedError:
                 missed_beats += 1
-            if missed_beats > 9:                                                      # Once 10 beats have been missed
+            if missed_beats > 4:                                                      # Once 5 beats have been missed
                 print(f'{missed_beats} failed pings to neighbor, remove {neighbor}')  # print to console
                 servers.remove(neighbor)                                              # remove the missing server
                 missed_beats = 0                                                      # reset the count
@@ -139,6 +125,7 @@ def heartbeat():
                     start_voting()                                                    # start an election
 
 
+# Function to handle the various commands that the server can receive
 def server_command(command):
     match command.split('_'):
         # Sends the chat message to all clients other than the sender
@@ -187,12 +174,16 @@ def server_command(command):
                 if int(inform_others):
                     message_to_servers(f'#QUIT_server_0_{ip}_{port}')
                 find_neighbor()
+        # Receive a vote in the election
+        # If I get a vote for myself then I've won the election
+        # If not, then vote
         case ['#VOTE', ip, port]:
             address = (ip, int(port))
-            if address == server_address:   # If I get a vote for myself
-                set_leader(server_address)  # then I've won the election
+            if address == server_address:
+                set_leader(server_address)
             else:
                 start_voting((ip, int(port)))
+        # Declaration that another server is the leader
         case ['#LEAD', ip, port]:
             set_leader((ip, int(port)))
 
@@ -226,8 +217,21 @@ def transmit_state(address):
         utility.tcp_transmit_message(f'#JOIN_server_0_{server[0]}_{server[1]}', address)
 
 
+"""
+Voting is implemented with the find_neighbor, start_voting, and set_leader functions
+The voting algorithm is the Chang and Roberts algorithm
+https://en.wikipedia.org/wiki/Chang_and_Roberts_algorithm
+
+
+I might try to change to a more efficient voting algorithm
+Details here: J. Villadangos, A. Cordoba, F. Farina and M. Prieto, "Efficient leader election in complete networks"
+"""
+
+
 # Figure out who our neighbor is
-# Our neighbor is the server with the next hi
+# Our neighbor is the server with the next highest address
+# The neighbors are used for crash fault tolerance
+# and to arrange the servers in a virtual ring for voting
 def find_neighbor():
     global neighbor
     length = len(servers)
@@ -256,6 +260,22 @@ def start_voting(address=server_address):
         print(f'Voting for {vote_for}')
         utility.tcp_transmit_message(f'#VOTE_{vote_for[0]}_{vote_for[1]}', neighbor)
     is_voting = True
+
+
+# Set the leader
+# If I'm the leader, tell the clients and other servers
+def set_leader(address):
+    global leader, is_leader, is_voting
+    leader = address
+    is_leader = server_address == address
+    is_voting = False
+    if is_leader:
+        print('I am the leader')
+        message = f'#LEAD_{SERVER_IP}_{server_port}'
+        message_to_clients(message)
+        message_to_servers(message)
+    else:
+        print(f'The leader is {leader}')
 
 
 if __name__ == '__main__':
