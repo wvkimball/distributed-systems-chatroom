@@ -2,44 +2,45 @@
 
 import socket
 import threading
+from utility import BUFFER_SIZE
 import utility
-from time import sleep, time
+from time import sleep
 
-# Create a UDP socket
-server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+# Constants
+# Server connection data
+SERVER_IP = utility.get_ip()
 
-# Find the server's ip and set the port
-server_ip = utility.get_ip()
-server_port = 10001
-server_address = (server_ip, server_port)
+# Create TCP socket for listening
+server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server_socket.bind((SERVER_IP, 0))
+server_socket.listen()
 
-# Buffer size
-buffer_size = utility.buffer_size
+# Find listening port and save server address tuple
+server_port = server_socket.getsockname()[1]
+server_address = (SERVER_IP, server_port)
 
-# Sets are used here to prevent duplicates
-clients = set()  # Set of clients
-servers = set()  # Set of clients
+# Lists for connected clients and servers
+clients = []
+servers = [server_address]  # Server list starts with this server in it
 
-# Variables to store the leader server
+# Variables for leadership and voting
+leader = None
 is_leader = False
-leader_address = ''
-last_leader_heartbeat = time()
+is_voting = False
+neighbor = None
 
 
 def main():
-    server_socket.bind((server_ip, server_port))
-    seek_other_servers()
-    print('Server up and running at {}'.format(server_ip))
+    startup_broadcast()
 
     threading.Thread(target=broadcast_listener).start()
     threading.Thread(target=manage_chat).start()
     threading.Thread(target=heartbeat).start()
 
 
-# Runs on startup, trys to find other servers to join
-def seek_other_servers():
+def startup_broadcast():
     broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # create UDP socket
-    broadcast_socket.bind((server_ip, 0))
+    broadcast_socket.bind((SERVER_IP, 0))
     broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)  # this is a broadcast socket
     broadcast_socket.settimeout(1)
 
@@ -48,198 +49,212 @@ def seek_other_servers():
     # 5 attempts are made to find another server / other servers
     # After this, the server assumes it is the only one and considers itself leader
     for i in range(0, 5):
-        broadcast_socket.sendto(utility.broadcast_code.encode(), ('<broadcast>', utility.broadcast_port))
+        broadcast_socket.sendto(utility.BROADCAST_CODE.encode(), ('<broadcast>', utility.BROADCAST_PORT))
         print("Looking for other servers")
 
         # Wait for a response packet. If no packet has been received in 2 seconds, sleep then broadcast again
         try:
             data, address = broadcast_socket.recvfrom(1024)
-            if data.startswith((utility.response_code + server_ip).encode()):
+            if data.startswith(f'{utility.RESPONSE_CODE}_{SERVER_IP}'.encode()):
                 print("Found server at", address[0])
-                send_message('#*#SERV', address)
+                response_port = int(data.decode().split('_')[2])
+                utility.tcp_transmit_message(f'#JOIN_server_1_{SERVER_IP}_{server_port}',
+                                             (address[0], response_port))
                 got_response = True
-                set_leader(address)
+                set_leader((address[0], response_port))
                 break
         except TimeoutError:
             pass
 
     broadcast_socket.close()
     if not got_response:
-        set_leader(server_address)
         print('No other servers found')
+        set_leader(server_address)
 
 
-# Set the lead server. If the leader address is our address, than is_leader is true
+# Set the leader
+# If I'm the leader, tell the clients and other servers
 def set_leader(address):
-    global is_leader, leader_address
-    is_leader = address == server_address
-    leader_address = address
+    global leader, is_leader, is_voting
+    leader = address
+    is_leader = server_address == address
+    is_voting = False
+    if is_leader:
+        print('I am the leader')
+        message = f'#LEAD_{SERVER_IP}_{server_port}'
+        message_to_clients(message)
+        message_to_servers(message)
+    else:
+        print(f'The leader is {leader}')
 
 
 # Function to listen for broadcasts from clients and respond when a broadcast is heard
 def broadcast_listener():
+    print('Server up and running at {}'.format(server_address))
+
     listener_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # create UDP socket
-    listener_socket.bind(('', utility.broadcast_port))
+    listener_socket.bind(('', utility.BROADCAST_PORT))
 
     while True:
-        data, address = listener_socket.recvfrom(1024)  # wait for a packet
-        if data.startswith(utility.broadcast_code.encode()):
+        data, address = listener_socket.recvfrom(BUFFER_SIZE)  # wait for a packet
+        if is_leader and data.startswith(utility.BROADCAST_CODE.encode()):
             print("Received broadcast from", address[0])
-            send_message(utility.response_code + address[0], address)
+            # Respond with the response code, the IP we're responding to, and the the port we're listening with
+            listener_socket.sendto(str.encode(f'{utility.RESPONSE_CODE}_{address[0]}_{server_port}'), address)
 
 
-# Function that receives a message and either distributes it to the clients or handles it as a command
-# TODO: add good receipt confirmations and maybe idempotency
+# Function to manage the chat
+# passes valid commands to server_command
 def manage_chat():
     while True:
-        data, address = server_socket.recvfrom(buffer_size)
-        message = data.decode()
-        # print('Received message {} from address {}'.format(message, address))
-
-        if message[0:3] == '#*#':
-            server_command(message[3:], address)
+        client, address = server_socket.accept()
+        message = client.recv(BUFFER_SIZE).decode()
+        if message != '#PING':
+            print(f'Received "{message}" from {address}')
+        if message[0] == '#':
+            server_command(message)
         else:
-            distribute_to_clients(message, address)
+            raise ValueError('Invalid message received')
 
 
-# TODO: This is bad and I feel bad for having written it. I'll rewrite this soon
-# Handles commands sent to the server
-# Pattern matching is awesome, and it's worth updating python just to have it
-def server_command(command, address):
-    match command.split('#*#'):
-        case ['JOIN', add_client_ip, add_client_port]:
-            pass  # To be used when I rewrite this method
-        case ['JOIN']:  # Request from a client to join the server's chatroom
-            add_client(address)
-        case ['EXIT']:  # Request from a client to be removed from the chatroom
-            clients.remove(address)
-            send_message('#*#EXIT', address)
-            distribute_to_clients('{} has left the chat'.format(address[0]), address, True)
-            distribute_to_servers('#*#REMOVE-CLIENT#*#{}#*#{}'.format(address[0], address[1]))
-        case ['SERV', add_server_ip, add_server_port]:
-            pass  # To be used when I rewrite this method
-        case ['SERV']:  # Request from a server to be added to the server pool
-            add_server(address)
-        case ['ADD-CLIENT', add_client_ip, add_client_port]:  # Command from the leader to add a client
-            client_to_add = (add_client_ip, int(add_client_port))
-            if client_to_add not in clients:  # Not in is maybe needless with sets, but it prevents the extra print
-                clients.add(client_to_add)
-                print('Command from {}, {} added to clients'.format(address, client_to_add))
-        case ['ADD-SERVER', add_server_ip, add_server_port]:  # Command from the leader to add a server
-            server_to_add = (add_server_ip, int(add_server_port))
-            if server_to_add != server_address and server_to_add not in servers:
-                servers.add(server_to_add)
-                print('Command from {}, {} added to servers'.format(address, server_to_add))
-        case ['REMOVE-CLIENT', re_client_ip, re_client_port]:  # Command from the leader to remove a client
-            client_to_remove = (re_client_ip, int(re_client_port))
+# Function to ping the neighbor, and respond if unable to do so
+def heartbeat():
+    missed_beats = 0
+    while True:
+        if neighbor:
             try:
-                clients.remove(client_to_remove)
-                print('Command from {}, {} removed from clients'.format(address, client_to_remove))
-            except KeyError:  # If the leader commanded us to remove a server we don't know, then request an update
-                print('Command from {} to remove unknown client {}'.format(address, client_to_remove))
-                print('Requesting update')
-                send_message('#*#REQUEST-UPDATE', address)
-        case ['REQUEST-UPDATE']:  # If I'm the leader, update all servers with what we know
-            if is_leader:
-                update_servers()
-        case ['CLEAR']:  # Clear our clients and servers. This should only be done before an update
-            print('!!! clients and servers have been cleared !!!')
-            clients.clear()
-            servers.clear()
-        case ['HEARTBEAT']:  # If the leader is getting heartbeats something is wrong
-            if is_leader or address != leader_address:
-                distribute_to_servers('#*#REQUEST-UPDATE')
+                utility.tcp_transmit_message('#PING', neighbor)
+                sleep(0.2)
+            except ConnectionRefusedError:
+                missed_beats += 1
+            if missed_beats > 9:                                                      # Once 10 beats have been missed
+                print(f'{missed_beats} failed pings to neighbor, remove {neighbor}')  # print to console
+                servers.remove(neighbor)                                              # remove the missing server
+                missed_beats = 0                                                      # reset the count
+                message_to_servers(f'#QUIT_server_0_{neighbor[0]}_{neighbor[1]}')     # inform the others
+                neighbor_was_leader = neighbor == leader                              # check if neighbor was leader
+                find_neighbor()                                                       # find a new neighbor
+                if neighbor_was_leader:                                               # if the neighbor was the leader
+                    print('Neighbor was leader, starting election')                   # print to console
+                    start_voting()                                                    # start an election
+
+
+def server_command(command):
+    match command.split('_'):
+        # Sends the chat message to all clients other than the sender
+        case ['#CHAT', sender_ip, sender_response_port, message]:
+            message_to_clients(message, (sender_ip, int(sender_response_port)))
+        # Add the provided client to this server's clients list
+        # If the request came from the client (instead of another server) announce to the other clients
+        # and inform the other servers
+        case ['#JOIN', 'client', inform_others, ip, port]:
+            if int(inform_others):  # Sending a 0/1 and casting to int is the easiest way I found to send bools as text
+                message_to_clients(f'{ip} has joined the chat')
+                message_to_servers(f'#JOIN_client_0_{ip}_{port}')
+            if (ip, int(port)) not in clients:  # We NEVER want duplicates in our lists
+                print(f'Adding {(ip, port)} to clients')
+                clients.append((ip, int(port)))
+        # Remove the provided client from this server's clients list
+        # If the request came from the client (instead of another server) announce to the other clients
+        # and inform the other servers
+        case ['#QUIT', 'client', inform_others, ip, port]:
+            print(f'Removing {(ip, port)} from clients')
+            clients.remove((ip, int(port)))
+            if int(inform_others):
+                utility.tcp_transmit_message(f'{SERVER_IP}_#QUIT', (ip, int(port)))
+                message_to_clients(f'{ip} has left the chat')
+                message_to_servers(f'#QUIT_client_0_{ip}_{port}')
+        # Add the provided server to this server's servers list
+        # If the request came from the server to be added send it the whole clients and servers list
+        # and inform the other servers
+        case ['#JOIN', 'server', inform_others, ip, port]:
+            if int(inform_others):
+                transmit_state((ip, int(port)))
+                message_to_servers(f'#JOIN_server_0_{ip}_{port}')
+            if (ip, int(port)) not in servers:  # We NEVER want duplicates in our lists
+                print(f'Adding {(ip, port)} to servers')
+                servers.append((ip, int(port)))
+                find_neighbor()
+        # Remove the provided server from this server's servers list
+        # If the request came from the server to be added inform the other servers
+        case ['#QUIT', 'server', inform_others, ip, port]:
+            server_to_remove = (ip, int(port))
+            if server_to_remove == server_address:  # If we're told to remove ourself, something is wrong
+                pass  # Will implement this later
             else:
-                update_last_leader_heartbeat()
-        case ['LEADER']:
-            if address != leader_address:
-                set_leader(address)
-                print(address, 'has declared itself leader')
-                update_last_leader_heartbeat()
+                print(f'Removing {(ip, port)} from servers')
+                servers.remove((ip, int(port)))
+                if int(inform_others):
+                    message_to_servers(f'#QUIT_server_0_{ip}_{port}')
+                find_neighbor()
+        case ['#VOTE', ip, port]:
+            address = (ip, int(port))
+            if address == server_address:   # If I get a vote for myself
+                set_leader(server_address)  # then I've won the election
+            else:
+                start_voting((ip, int(port)))
+        case ['#LEAD', ip, port]:
+            set_leader((ip, int(port)))
 
 
-# Adds a client to our list and tells the other servers about it
-# If not the leader, request an update
-def add_client(address):
-    clients.add(address)
-    print('{} added to clients'.format(address))
-    distribute_to_servers('#*#ADD-CLIENT#*#{}#*#{}'.format(address[0], address[1]))
-    if is_leader:
-        send_message('Welcome to the chat!', address)
-        distribute_to_clients('{} has joined the chat'.format(address[0]), address, True)
-    else:
-        distribute_to_servers('#*#REQUEST-UPDATE')
-
-
-# Adds a server to our list and updates servers, so that the new server has everything
-def add_server(address):
-    servers.add(address)
-    print('{} added to servers'.format(address))
-    update_servers()
-
-
-# Sends information on all clients and servers to all servers
-def update_servers():
-    print('Updating clients/servers')
-    distribute_to_clients('#*#SERV', server_message=True)
-    for client in clients:
-        distribute_to_servers('#*#ADD-CLIENT#*#{}#*#{}'.format(client[0], client[1]), False)
-    distribute_to_servers('#*#ADD-SERVER#*#{}#*#{}'.format(server_ip, server_port), False)
-    for server in servers:
-        distribute_to_servers('#*#LEADER'.format(server[0], server[1]), False)
-        distribute_to_servers('#*#ADD-SERVER#*#{}#*#{}'.format(server[0], server[1]), False)
-
-
-# Loops through all clients and sends them the message
-# If a sender is provided, they are not sent the message
-def distribute_to_clients(message, sender='', server_message=False):
+# Sends message to all clients, excluding the sender
+# If the message is "purely" a server message, then the server is the sender
+# and the message is sent to all clients
+def message_to_clients(message, sender=server_address):
     for client in clients:
         if client != sender:
-            ident = ''
-            if not server_message:
-                ident = '{}: '.format(sender[0])
-            send_message(ident + message, client)
+            print(f'Send "{message}" to {client}')
+            to_send = message
+            if message[0] != '#':
+                to_send += f'_{sender[0]}'
+            utility.tcp_transmit_message(to_send, client)
 
 
-# Loops through all other servers and sends them the message/command
-def distribute_to_servers(message, print_message=True):
+# Sends message to all connected servers, other than this server
+def message_to_servers(message):
     for server in servers:
-        send_message(message, server, print_message)
+        if server != server_address:
+            print(f'Send "{message}" to {server}')
+            utility.tcp_transmit_message(message, server)
 
 
-# Sends a message to an address/client
-def send_message(message, address, print_message=True):
-    server_socket.sendto(str.encode(message), address)
-    if print_message:
-        print('Send message {} to address {}'.format(message, address))
+# Transmits the whole clients and servers lists to the provided address
+def transmit_state(address):
+    for client in clients:
+        utility.tcp_transmit_message(f'#JOIN_client_0_{client[0]}_{client[1]}', address)
+    for server in servers:
+        utility.tcp_transmit_message(f'#JOIN_server_0_{server[0]}_{server[1]}', address)
 
 
-def heartbeat():
-    while True:
-        if is_leader:
-            distribute_to_servers('#*#HEARTBEAT', False)
-            sleep(1)
-        else:
-            if time() - last_leader_heartbeat >= 5:
-                print('Last leader heartbeat is more than 5 seconds ago')
-                next_leader()
-                update_last_leader_heartbeat()  # Give the new leader a chance to start sending heartbeats
-            sleep(1)
+# Figure out who our neighbor is
+# Our neighbor is the server with the next hi
+def find_neighbor():
+    global neighbor
+    length = len(servers)
+    if length == 1:
+        neighbor = None
+        return
+    servers.sort()
+    index = servers.index(server_address)
+    neighbor = servers[0] if index + 1 == length else servers[index + 1]
+    print(f'My neighbor is {neighbor}')
 
 
-def update_last_leader_heartbeat():
-    global last_leader_heartbeat
-    last_leader_heartbeat = time()
-
-
-# TODO: replace with a proper leader election algorithm
-def next_leader():
-    servers.remove(leader_address)
-    set_leader(min({server_address}.union(servers)))
-    print('The new leader should be', leader_address)
-    if is_leader:
-        distribute_to_servers('#*#LEADER')
-        distribute_to_clients('#*#SERV', server_message=True)
+# Starts voting by setting is_voting to true and sending a vote to neighbor
+# If we're the only server, win automatically
+# If we're the first server to vote, this will start the whole election
+# and we just vote for ourself
+# Otherwise, we vote for the min out of our address and the vote we received
+def start_voting(address=server_address):
+    if not neighbor:
+        set_leader(server_address)
+        return
+    global is_voting
+    vote_for = min(address, server_address)
+    if vote_for != server_address or not is_voting:
+        print(f'Voting for {vote_for}')
+        utility.tcp_transmit_message(f'#VOTE_{vote_for[0]}_{vote_for[1]}', neighbor)
+    is_voting = True
 
 
 if __name__ == '__main__':
