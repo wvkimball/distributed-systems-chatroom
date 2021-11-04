@@ -199,7 +199,14 @@ def message_to_clients(message, sender=server_address):
             to_send = message
             if message[0] != '#':
                 to_send += f'_{sender[0]}'
-            utility.tcp_transmit_message(to_send, client)
+            try:
+                utility.tcp_transmit_message(to_send, client)
+            except (ConnectionRefusedError, TimeoutError):  # If we can't connect to a client, then drop it
+                print(f'Failed send to {client}')
+                print(f'Removing {client} from clients')
+                clients.remove(client)
+                message_to_servers(f'#QUIT_client_0_{client[0]}_{client[1]}')
+                message_to_clients(f'{client[0]} is unreachable')
 
 
 # Sends message to all connected servers, other than this server

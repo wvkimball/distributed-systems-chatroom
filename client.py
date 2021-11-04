@@ -61,7 +61,7 @@ def set_server_address(address: tuple):
     global server_ip, server_port, server_address
     server_ip, server_port = address
     server_address = address
-    print(f'\rServer address set to {address}\nYou: ', end='')
+    # print(f'\rServer address set to {address}\nYou: ', end='')
 
 
 # Function to handle sending messages to the server
