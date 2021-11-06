@@ -41,3 +41,20 @@ def cls():
 def string_to_address(address_string):
     a = address_string[1:-1].split(', ')
     return a[0][1:-1], int(a[1])
+
+
+# Create TCP socket for listening to unicast messages
+def setup_tcp_listener_socket():
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind((get_ip(), 0))
+    s.listen()
+    return s
+
+
+def setup_udp_broadcast_socket(timeout=None):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # create UDP socket
+    s.bind((get_ip(), 0))
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)  # this is a broadcast socket
+    if timeout:
+        s.settimeout(timeout)
+    return s

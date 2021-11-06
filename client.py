@@ -1,3 +1,5 @@
+#!/usr/bin/env python3.10
+
 import socket
 import threading
 import sys
@@ -5,23 +7,13 @@ from utility import BUFFER_SIZE
 import utility
 from time import sleep
 
-# Constants
-CLIENT_IP = utility.get_ip()
-
 # Create TCP socket for listening to unicast messages
-client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-client_socket.bind((CLIENT_IP, 0))
-client_socket.listen()
+# The address tuple of this socket is the unique identifier for the client
+client_socket = utility.setup_tcp_listener_socket()
+client_address = client_socket.getsockname()
 
-# Find listening port and save client address tuple
-# The address tuple of the TCP listening port is the unique identifier for the client
-client_port = client_socket.getsockname()[1]
-client_address = (CLIENT_IP, client_port)
-
-# Create global variables which will be set by server response
-server_ip = None
-server_port = None
-server_address = (server_ip, server_port)
+# Global variable to save the server address
+server_address = None
 
 
 def main():
@@ -35,10 +27,7 @@ def main():
 # Broadcasts that this client is looking for a server
 # This shouts into the void until a server is found
 def broadcast_for_server():
-    broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # create UDP socket
-    broadcast_socket.bind((CLIENT_IP, 0))
-    broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)  # this is a broadcast socket
-    broadcast_socket.settimeout(2)
+    broadcast_socket = utility.setup_udp_broadcast_socket(timeout=2)
 
     while True:
         broadcast_socket.sendto(utility.BROADCAST_CODE.encode(), ('<broadcast>', utility.BROADCAST_PORT))
@@ -46,7 +35,7 @@ def broadcast_for_server():
         # Wait for a response packet. If no packet has been received in 2 seconds, sleep then broadcast again
         try:
             data, address = broadcast_socket.recvfrom(1024)
-            if data.startswith(f'{utility.RESPONSE_CODE}_{CLIENT_IP}'.encode()):
+            if data.startswith(f'{utility.RESPONSE_CODE}_{client_address[0]}'.encode()):
                 message = data.decode().split('_')
                 print("Found server at", address[0])
                 set_server_address((address[0], int(message[2])))

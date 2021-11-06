@@ -6,18 +6,10 @@ from utility import BUFFER_SIZE
 import utility
 from time import sleep
 
-# Constants
-SERVER_IP = utility.get_ip()
-
 # Create TCP socket for listening to unicast messages
-server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server_socket.bind((SERVER_IP, 0))
-server_socket.listen()
-
-# Find listening port and save server address tuple
-# The address tuple of the TCP listening port is the unique identifier for the server
-server_port = server_socket.getsockname()[1]
-server_address = (SERVER_IP, server_port)
+# The address tuple of this socket is the unique identifier for the server
+server_socket = utility.setup_tcp_listener_socket()
+server_address = server_socket.getsockname()
 
 # Lists for connected clients and servers
 clients = []
@@ -41,10 +33,7 @@ def main():
 
 # Broadcasts looking for another active server
 def startup_broadcast():
-    broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # create UDP socket
-    broadcast_socket.bind((SERVER_IP, 0))
-    broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)  # this is a broadcast socket
-    broadcast_socket.settimeout(1)
+    broadcast_socket = utility.setup_udp_broadcast_socket(timeout=1)
 
     got_response = False
 
@@ -57,7 +46,7 @@ def startup_broadcast():
         # Wait for a response packet. If no packet has been received in 2 seconds, sleep then broadcast again
         try:
             data, address = broadcast_socket.recvfrom(1024)
-            if data.startswith(f'{utility.RESPONSE_CODE}_{SERVER_IP}'.encode()):
+            if data.startswith(f'{utility.RESPONSE_CODE}_{server_address[0]}'.encode()):
                 print("Found server at", address[0])
                 response_port = int(data.decode().split('_')[2])
                 utility.tcp_transmit_message(f'#JOIN_server_1_{server_address}',
@@ -87,7 +76,7 @@ def broadcast_listener():
         if is_leader and data.startswith(utility.BROADCAST_CODE.encode()):
             print(f'Received broadcast from {address[0]}, replying with response code')
             # Respond with the response code, the IP we're responding to, and the the port we're listening with
-            listener_socket.sendto(str.encode(f'{utility.RESPONSE_CODE}_{address[0]}_{server_port}'), address)
+            listener_socket.sendto(str.encode(f'{utility.RESPONSE_CODE}_{address[0]}_{server_address[1]}'), address)
 
 
 # Function to manage the chat
@@ -96,7 +85,7 @@ def manage_chat():
     while True:
         client, address = server_socket.accept()
         message = client.recv(BUFFER_SIZE).decode()
-        if message != '#PING':
+        if message != '#PING':  # We don't print pings since that gets a bit overwhelming
             print(f'Received "{message}" from {address}')
         if message[0] == '#':
             server_command(message)
@@ -271,7 +260,7 @@ def start_voting(address=server_address):
     vote_for = min(address, server_address)
     if vote_for != server_address or not is_voting:
         message = f'#VOTE_{vote_for}'
-        print(f'Send "{message}" to {vote_for}')
+        print(f'Send "{message}" to {neighbor}')
         utility.tcp_transmit_message(message, neighbor)
     is_voting = True
 
