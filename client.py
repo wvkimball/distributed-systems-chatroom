@@ -1,6 +1,5 @@
 #!/usr/bin/env python3.10
 
-import socket
 import threading
 import sys
 from utility import BUFFER_SIZE
@@ -13,11 +12,13 @@ client_socket = utility.setup_tcp_listener_socket()
 client_address = client_socket.getsockname()
 
 # Global variable to save the server address
-server_address = None
+server_address = (None,)
 
 # Flag to enable stopping the client
 is_active = True
 
+# Current count of the multicast messages
+multi_msg_count = 0
 
 def main():
     utility.cls()
@@ -96,10 +97,20 @@ def multicast_listener():
     # Create the socket
     m_listener_socket = utility.setup_multicast_listener_socket(utility.MG_CLIENT)
 
+    global multi_msg_count
     while is_active:
         data, address = m_listener_socket.recvfrom(BUFFER_SIZE)
         data = data.decode()
         data = data[data.index(')') + 1:]  # Trim the sending server address from the message
+        count = int(data[:data.index(')')])  # Parse the count of this multicast message
+        if count <= multi_msg_count:
+            continue
+        if count > multi_msg_count + 1:
+            for i in range(multi_msg_count, count):
+                message_to_server(f'#RMSG_client_{client_address}_{i}')
+                sleep(0.2)  # I should probably come up with a better way to wait to receive the messages
+        multi_msg_count += 1
+        data = data[data.index(')') + 1:]
         m_listener_socket.sendto(b'ack', address)
         parse_message(data)
 
@@ -137,6 +148,9 @@ def server_command(command):
     match command.split('_'):
         case ['#LEAD', address_string]:
             set_server_address(utility.string_to_address(address_string))
+        case ['#MSG', count]:
+            global multi_msg_count
+            multi_msg_count = int(count)
 
 
 if __name__ == '__main__':

@@ -22,6 +22,13 @@ is_leader = False
 is_voting = False
 neighbor = None
 
+# Variables for reliable multicasting
+client_multi_msgs = {}
+c_multi_count = 0
+server_multi_msgs = {}
+s_multi_count = 0
+KEEP_MSGS = 10
+
 
 def main():
     utility.cls()
@@ -103,9 +110,19 @@ def multicast_listener():
         data, address = m_listener_socket.recvfrom(BUFFER_SIZE)
         if data.startswith(f'{server_address}'.encode()):
             continue  # If we've picked up our own message, ignore it
+
         data = data.decode()
-        message = data[data.index(')')+1:]  # Trim the sending server address from the message
-        print(f'Received multicast {message} from {address}, sending acknowledgement')
+        data = data[data.index(')')+1:]  # Trim the sending server address from the message
+        count = int(data[:data.index(')')])  # Parse the count of this multicast message
+        if count <= s_multi_count:
+            continue
+        if count > s_multi_count + 1:
+            for i in range(s_multi_count, count):
+                tcp_transmit_message(f'#RMSG_server_{server_address}_{i}', leader_address)
+                sleep(0.2)  # I should probably come up with a better way to wait to receive the messages
+        message = data[data.index(')')+1:]
+        add_server_multi_msg(message)
+        print(f'Received multicast number {count} "{message}" from {address}, sending acknowledgement')
         m_listener_socket.sendto(b'ack', address)
         if message[0] == '#':
             server_command(message)
@@ -115,22 +132,34 @@ def multicast_listener():
 
 # Transmits multicast messages and checks how many responses are received
 def multicast_transmit_message(message, group=utility.MG_SERVER):
-    expected_responses = None
-    send_to = None
+    global s_multi_count, c_multi_count
+
     match group:
         case utility.MG_SERVER:
             expected_responses = len(servers) - 1
-            send_to = 'servers'
+            to_servers = True
+            add_server_multi_msg(message)
+            count = s_multi_count
+            string = 'servers'
         case utility.MG_CLIENT:
             expected_responses = len(clients)
-            send_to = 'clients'
+            to_servers = False
+            add_client_multi_msg(message)
+            count = c_multi_count
+            string = 'clients'
         case _:
             raise ValueError('Invalid multicast group')
 
-    if not expected_responses:  # If there are no expected responses, then don't bother transmitting
+    # If there are no expected responses, then don't bother transmitting
+    # Reduce the message counts. Current message will be overwritten next time
+    if not expected_responses:
+        if to_servers:
+            s_multi_count -= 1
+        else:
+            c_multi_count -= 1
         return
 
-    print(f'Sending multicast "{message}" to {send_to}')
+    print(f'Sending multicast number {count} "{message}" to {string}')
 
     # Create the socket
     m_sender_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -141,13 +170,13 @@ def multicast_transmit_message(message, group=utility.MG_SERVER):
 
     try:
         # Send data to the multicast group
-        send = f'{server_address}{message}'.encode()
+        send = f'{server_address}{count}){message}'.encode()
         m_sender_socket.sendto(send, group)
 
         # Look for responses from all recipients
         while True:
             try:
-                data, server = m_sender_socket.recvfrom(16)
+                data, address = m_sender_socket.recvfrom(16)
             except TimeoutError:
                 break
             else:
@@ -155,8 +184,14 @@ def multicast_transmit_message(message, group=utility.MG_SERVER):
     finally:
         print(f'Received {responses} of {expected_responses} expected responses')
         m_sender_socket.close()
-        if group == utility.MG_CLIENT and responses < expected_responses:
-            ping_clients()
+
+        # If the message was for the clients, now send it to the servers as well
+        if not to_servers:
+            message_to_servers(f'#MULTI_client_{c_multi_count}_{message}')
+            # If there aren't enough responses and we were sending to clients
+            # Ping the clients
+            if responses < expected_responses:
+                ping_clients()
 
 
 # Function to ping the neighbor, and respond if unable to do so
@@ -169,20 +204,21 @@ def heartbeat():
                 sleep(0.2)
             except (ConnectionRefusedError, TimeoutError):
                 missed_beats += 1
-            if missed_beats > 4:                                                      # Once 5 beats have been missed
-                print(f'{missed_beats} failed pings to neighbor, remove {neighbor}')  # print to console
-                servers.remove(neighbor)                                              # remove the missing server
-                missed_beats = 0                                                      # reset the count
-                message_to_servers(f'#QUIT_server_0_{neighbor}')                      # inform the others
-                neighbor_was_leader = neighbor == leader_address                      # check if neighbor was leader
-                find_neighbor()                                                       # find a new neighbor
-                if neighbor_was_leader:                                               # if the neighbor was the leader
-                    print('Previous neighbor was leader, starting election')          # print to console
-                    start_voting()                                                    # start an election
+            if missed_beats > 4:                                                        # Once 5 beats have been missed
+                print(f'{missed_beats} failed pings to neighbor, remove {neighbor}')    # print to console
+                servers.remove(neighbor)                                                # remove the missing server
+                missed_beats = 0                                                        # reset the count
+                message_to_servers(f'#QUIT_server_0_{neighbor}')                        # inform the others
+                neighbor_was_leader = neighbor == leader_address                        # check if neighbor was leader
+                find_neighbor()                                                         # find a new neighbor
+                if neighbor_was_leader:                                                 # if the neighbor was the leader
+                    print('Previous neighbor was leader, starting election')            # print to console
+                    start_voting()                                                      # start an election
 
 
 # Function to handle the various commands that the server can receive
 def server_command(command):
+    global c_multi_count, s_multi_count
     match command.split('_'):
         # Sends the chat message to all clients other than the sender
         case ['#CHAT', address_string, message]:
@@ -204,6 +240,7 @@ def server_command(command):
             if int(inform_others):  # Sending a 0/1 and casting to int is the easiest way I found to send bools as text
                 message_to_clients(f'{address[0]} has joined the chat')
                 message_to_servers(f'#JOIN_client_0_{address}')
+                tcp_transmit_message(f'#MSG_{c_multi_count}', address)
             if address not in clients:  # We NEVER want duplicates in our lists
                 print(f'Adding {address} to clients')
                 clients.append(address)
@@ -243,8 +280,11 @@ def server_command(command):
             if address == server_address:  # If we're told to remove ourself, something is wrong
                 pass  # Will implement this later
             else:
-                print(f'Removing {address} from servers')
-                servers.remove(address)
+                try:
+                    servers.remove(address)
+                    print(f'Removing {address} from servers')
+                except ValueError:
+                    print(f'{address} has already been removed')
                 if int(inform_others):
                     message_to_servers(f'#QUIT_server_0_{address}')
                 find_neighbor()
@@ -264,6 +304,25 @@ def server_command(command):
                 set_leader(address)
                 message = f'#LEAD_{leader_address}'
                 tcp_transmit_message(message, neighbor)
+        # Ability to save a TCP message in the multi message dictionaries
+        # These exist so that new servers can get caught up
+        case ['#MULTI', 'client', number, *message]:
+            number = int(number)
+            client_multi_msgs[number] = list_to_message(message)
+            if number > c_multi_count:
+                c_multi_count = number
+        case ['#MULTI', 'server', number, *message]:
+            number = int(number)
+            server_multi_msgs[number] = list_to_message(message)
+            if number > s_multi_count:
+                s_multi_count = number
+        # Requests for a saved message
+        case ['#RMSG', 'client', address_string, number]:
+            address = utility.string_to_address(address_string)
+            tcp_transmit_message(client_multi_msgs[int(number)], address)
+        case ['#RMSG', 'server', address_string, number]:
+            address = utility.string_to_address(address_string)
+            tcp_transmit_message(server_multi_msgs[int(number)], address)
 
 
 # If a specific client is provided, ping that client
@@ -273,6 +332,7 @@ def ping_clients(client_to_ping=None):
         to_ping = [client_to_ping]
     else:
         to_ping = clients
+
     for client in to_ping:
         try:
             utility.tcp_transmit_message('#PING', client)
@@ -320,11 +380,47 @@ def message_to_servers(message):
 
 
 # Transmits the whole clients and servers lists to the provided address
+# Then transmits the stored multicast lists
 def transmit_state(address):
     for client in clients:
-        tcp_transmit_message(f'#JOIN_client_0_{client}', address)
+        utility.tcp_transmit_message(f'#JOIN_client_0_{client}', address)
     for server in servers:
-        tcp_transmit_message(f'#JOIN_server_0_{server}', address)
+        utility.tcp_transmit_message(f'#JOIN_server_0_{server}', address)
+    for key in client_multi_msgs:
+        utility.tcp_transmit_message(f'#MULT_client_{key}_{client_multi_msgs[key]}', address)
+    for key in server_multi_msgs:
+        utility.tcp_transmit_message(f'#MULT_server_{key}_{server_multi_msgs[key]}', address)
+
+
+# Store the last keep_msgs client multicast messages, in case they're needed
+def add_client_multi_msg(message):
+    global c_multi_count
+    client_multi_msgs[c_multi_count] = message
+    c_multi_count += 1
+    if c_multi_count >= KEEP_MSGS:
+        try:
+            del client_multi_msgs[c_multi_count - KEEP_MSGS]
+        except KeyError:
+            pass
+
+
+# Store the last keep_msgs server multicast messages, in case they're needed
+def add_server_multi_msg(message):
+    global s_multi_count
+    client_multi_msgs[c_multi_count] = message
+    s_multi_count += 1
+    if c_multi_count >= KEEP_MSGS:
+        try:
+            del client_multi_msgs[c_multi_count - KEEP_MSGS]
+        except KeyError:
+            pass
+
+
+def list_to_message(list_msg):
+    message = list_msg[0]
+    for text in list_msg[1:]:
+        message = f'{message}_{text}'
+    return message
 
 
 # Sends message to address and prints to the console
