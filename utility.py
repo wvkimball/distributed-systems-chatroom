@@ -5,7 +5,9 @@ import os
 import struct
 
 # Constants
+# By changing the port numbers, there can be more than one chat on a network
 BROADCAST_PORT = 10002
+M_LISTEN_PORT = 10001
 BUFFER_SIZE = 1024
 # Random code to broadcast / listen for to filter out other network traffic
 BROADCAST_CODE = '9310e231f20a07cb53d96b90a978163d'
@@ -14,7 +16,6 @@ RESPONSE_CODE = 'f56ddd73d577e38c45769dcd09dc9d99'
 # Addresses for multicast groups
 # Block 224.3.0.64-224.3.255.255 is all unassigned
 # Choices are arbitrary for now
-M_LISTEN_PORT = 10001
 MG_SERVER = ('224.3.100.255', M_LISTEN_PORT)
 MG_CLIENT = ('224.3.200.255', M_LISTEN_PORT)
 
@@ -80,7 +81,8 @@ def setup_udp_broadcast_socket(timeout=None):
 # https://pymotw.com/3/socket/multicast.html
 def setup_multicast_listener_socket(group):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.bind(('', group[1]))
+    # s.bind(('', group[1]))
+    s.bind(group)
 
     group = socket.inet_aton(group[0])
     mreq = struct.pack('4sL', group, socket.INADDR_ANY)

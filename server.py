@@ -13,6 +13,7 @@ server_address = server_socket.getsockname()
 
 # Lists for connected clients and servers
 clients = []
+nicknames = {}
 servers = [server_address]  # Server list starts with this server in it
 
 # Variables for leadership and voting
@@ -50,7 +51,7 @@ def startup_broadcast():
             if data.startswith(f'{utility.RESPONSE_CODE}_{server_address[0]}'.encode()):
                 print("Found server at", address[0])
                 response_port = int(data.decode().split('_')[2])
-                utility.tcp_transmit_message(f'#JOIN_server_1_{server_address}', (address[0], response_port))
+                tcp_transmit_message(f'#JOIN_server_1_{server_address}', (address[0], response_port))
                 got_response = True
                 set_leader((address[0], response_port))
                 break
@@ -187,6 +188,14 @@ def server_command(command):
         case ['#CHAT', address_string, message]:
             address = utility.string_to_address(address_string)
             message_to_clients(message, address)
+        # Sets a nickname for the client
+        case ['#NICK', inform_others, address_string, nickname]:
+            address = utility.string_to_address(address_string)
+            print(f'Changing nickname of {address} to {nickname}')
+            add_nickname(address, nickname)
+            if int(inform_others):
+                message_to_clients(f'{address[0]} changed name to {nicknames[address]}')
+                message_to_servers(f'#NICK_0_{address}_{nicknames[address]}')
         # Add the provided client to this server's clients list
         # If the request came from the client (instead of another server) announce to the other clients
         # and inform the other servers
@@ -205,13 +214,16 @@ def server_command(command):
             address = utility.string_to_address(address_string)
             print(f'Removing {address} from clients')
             try:
-                clients.remove(address)
                 if int(inform_others):
-                    ping_clients(address)  # Pinging the client to end its TCP listener
-                    message_to_clients(f'{address[0]} has left the chat')
-                    message_to_servers(f'#QUIT_client_0_{address}')
+                    message_to_clients('#PING')  # Sending a ping as a multicast to end the client's m_listener
+                clients.remove(address)
+                remove_nickname(address)
             except ValueError:
-                print(f'{address} was not in clients')
+                print(f'{address} was not in clients, it was likely removed by the ping')
+            if int(inform_others):
+                tcp_transmit_message(f'Goodbye_{server_address}_', address)  # Say goodbye to the client
+                message_to_clients(f'{address[0]} has left the chat')
+                message_to_servers(f'#QUIT_client_0_{address}')
         # Add the provided server to this server's servers list
         # If the request came from the server to be added send it the whole clients and servers list
         # and inform the other servers
@@ -251,8 +263,7 @@ def server_command(command):
             if address != server_address:
                 set_leader(address)
                 message = f'#LEAD_{leader_address}'
-                print(f'Send "{message}" to {neighbor}')
-                utility.tcp_transmit_message(message, neighbor)
+                tcp_transmit_message(message, neighbor)
 
 
 # If a specific client is provided, ping that client
@@ -270,6 +281,7 @@ def ping_clients(client_to_ping=None):
             print(f'Removing {client} from clients')
             try:
                 clients.remove(client)
+                remove_nickname(client)
                 message_to_servers(f'#QUIT_client_0_{client}')
                 message_to_clients(f'{client[0]} is unreachable')
             except ValueError:
@@ -282,8 +294,24 @@ def ping_clients(client_to_ping=None):
 def message_to_clients(message, sender=server_address):
     to_send = message
     if message[0] != '#':
-        to_send += f'_{sender}'
+        to_send += f'_{sender}_{nicknames[sender] if sender in nicknames else ""}'
     multicast_transmit_message(to_send, utility.MG_CLIENT)
+
+
+# Adds a nickname to the dictionary. If the nickname already exists, then appends the client's ip
+def add_nickname(address, nickname):
+    if nickname in nicknames.values():
+        nicknames[address] = f'{nickname} ({address[0]})'
+    else:
+        nicknames[address] = nickname
+
+
+# Removes a nickname from the dictionary
+def remove_nickname(address):
+    try:
+        del nicknames[address]
+    except KeyError:
+        pass
 
 
 # Sends a multicast message to all servers
@@ -294,9 +322,15 @@ def message_to_servers(message):
 # Transmits the whole clients and servers lists to the provided address
 def transmit_state(address):
     for client in clients:
-        utility.tcp_transmit_message(f'#JOIN_client_0_{client}', address)
+        tcp_transmit_message(f'#JOIN_client_0_{client}', address)
     for server in servers:
-        utility.tcp_transmit_message(f'#JOIN_server_0_{server}', address)
+        tcp_transmit_message(f'#JOIN_server_0_{server}', address)
+
+
+# Sends message to address and prints to the console
+def tcp_transmit_message(message, address):
+    print(f'Send "{message}" to {address}')
+    utility.tcp_transmit_message(message, address)
 
 
 """
@@ -340,8 +374,7 @@ def start_voting(address=server_address):
     vote_for = min(address, server_address)
     if vote_for != server_address or not is_voting:
         message = f'#VOTE_{vote_for}'
-        print(f'Send "{message}" to {neighbor}')
-        utility.tcp_transmit_message(message, neighbor)
+        tcp_transmit_message(message, neighbor)
     is_voting = True
 
 
@@ -357,8 +390,7 @@ def set_leader(address):
         message = f'#LEAD_{server_address}'
         message_to_clients(message)
         if neighbor:
-            print(f'Send "{message}" to {neighbor}')
-            utility.tcp_transmit_message(message, neighbor)
+            tcp_transmit_message(message, neighbor)
     else:
         print(f'The leader is {leader_address}')
 

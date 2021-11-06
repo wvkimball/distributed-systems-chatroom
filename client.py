@@ -63,7 +63,9 @@ def transmit_messages():
     while is_active:
         message = input('\rYou: ')
         # Send message
-        if message[0] == '#':
+        if len(message) > BUFFER_SIZE / 2:
+            print('Message is too long')
+        elif message[0] == '#':
             client_command(message)
         else:
             message_to_server(f'#CHAT_{client_address}_{message}')
@@ -107,14 +109,13 @@ def parse_message(data):
     if data[0] == '#':
         server_command(data)
     else:
-        data = data.split('_')
-        message = data[0]
-        sender = utility.string_to_address(data[1])
+        message, sender, nickname = data.split('_')
+        sender = utility.string_to_address(sender)
 
         if sender == server_address:
             print(f'\r{message}')
         elif sender != client_address:
-            print(f'\r{sender[0]}: {message}')
+            print(f'\r{nickname if nickname else sender[0]}: {message}')
         print('\rYou: ' if is_active else '', end='')
 
 
@@ -126,8 +127,9 @@ def client_command(command):
             client_socket.close()
             global is_active
             is_active = False
-            # print('\rGoodbye!')
             sys.exit(0)
+        case ['#NICK', nickname]:
+            message_to_server(f'#NICK_1_{client_address}_{nickname}')
 
 
 # Handle commands received by this client from the server
