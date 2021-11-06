@@ -35,4 +35,9 @@ def tcp_transmit_message(message, address):
 
 
 def cls():
-    os.system('cls' if os.name=='nt' else 'clear')
+    os.system('cls' if os.name == 'nt' else 'clear')
+
+
+def string_to_address(address_string):
+    a = address_string[1:-1].split(', ')
+    return a[0][1:-1], int(a[1])

@@ -8,17 +8,19 @@ from time import sleep
 # Constants
 CLIENT_IP = utility.get_ip()
 
-# Create TCP socket for listening
+# Create TCP socket for listening to unicast messages
 client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 client_socket.bind((CLIENT_IP, 0))
 client_socket.listen()
 
-# Find listening port
+# Find listening port and save client address tuple
+# The address tuple of the TCP listening port is the unique identifier for the client
 client_port = client_socket.getsockname()[1]
+client_address = (CLIENT_IP, client_port)
 
 # Create global variables which will be set by server response
-server_ip = ''
-server_port = 0
+server_ip = None
+server_port = None
 server_address = (server_ip, server_port)
 
 
@@ -53,7 +55,7 @@ def broadcast_for_server():
             sleep(3)
 
     broadcast_socket.close()
-    message_to_server(f'#JOIN_client_1_{CLIENT_IP}_{client_port}')
+    message_to_server(f'#JOIN_client_1_{client_address}')
 
 
 # Sets the server address which messages will be sent to
@@ -86,7 +88,7 @@ def message_to_server(message):
 
 
 def format_chat(message):
-    return f'#CHAT_{CLIENT_IP}_{client_port}_{message}'
+    return f'#CHAT_{client_address}_{message}'
 
 
 # Function to handle receiving messages from the server
@@ -111,7 +113,7 @@ def receive_messages():
 def client_command(command):
     match command.split('_'):
         case ['#QUIT']:
-            message_to_server(f'#QUIT_client_1_{CLIENT_IP}_{client_port}')
+            message_to_server(f'#QUIT_client_1_{client_address}')
             sys.exit(0)
 
 
@@ -122,8 +124,8 @@ def server_command(command):
             print('\rGoodbye!')
             client_socket.close()
             sys.exit(0)
-        case ['#LEAD', ip, port]:
-            set_server_address((ip, int(port)))
+        case ['#LEAD', address_string]:
+            set_server_address(utility.string_to_address(address_string))
 
 
 if __name__ == '__main__':

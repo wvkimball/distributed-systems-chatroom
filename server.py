@@ -7,15 +7,15 @@ import utility
 from time import sleep
 
 # Constants
-# Server connection data
 SERVER_IP = utility.get_ip()
 
-# Create TCP socket for listening
+# Create TCP socket for listening to unicast messages
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server_socket.bind((SERVER_IP, 0))
 server_socket.listen()
 
 # Find listening port and save server address tuple
+# The address tuple of the TCP listening port is the unique identifier for the server
 server_port = server_socket.getsockname()[1]
 server_address = (SERVER_IP, server_port)
 
@@ -60,7 +60,7 @@ def startup_broadcast():
             if data.startswith(f'{utility.RESPONSE_CODE}_{SERVER_IP}'.encode()):
                 print("Found server at", address[0])
                 response_port = int(data.decode().split('_')[2])
-                utility.tcp_transmit_message(f'#JOIN_server_1_{SERVER_IP}_{server_port}',
+                utility.tcp_transmit_message(f'#JOIN_server_1_{server_address}',
                                              (address[0], response_port))
                 got_response = True
                 set_leader((address[0], response_port))
@@ -85,7 +85,7 @@ def broadcast_listener():
     while True:
         data, address = listener_socket.recvfrom(BUFFER_SIZE)  # wait for a packet
         if is_leader and data.startswith(utility.BROADCAST_CODE.encode()):
-            print("Received broadcast from", address[0])
+            print(f'Received broadcast from {address[0]}, replying with response code')
             # Respond with the response code, the IP we're responding to, and the the port we're listening with
             listener_socket.sendto(str.encode(f'{utility.RESPONSE_CODE}_{address[0]}_{server_port}'), address)
 
@@ -118,11 +118,11 @@ def heartbeat():
                 print(f'{missed_beats} failed pings to neighbor, remove {neighbor}')  # print to console
                 servers.remove(neighbor)                                              # remove the missing server
                 missed_beats = 0                                                      # reset the count
-                message_to_servers(f'#QUIT_server_0_{neighbor[0]}_{neighbor[1]}')     # inform the others
+                message_to_servers(f'#QUIT_server_0_{neighbor}')                      # inform the others
                 neighbor_was_leader = neighbor == leader                              # check if neighbor was leader
                 find_neighbor()                                                       # find a new neighbor
                 if neighbor_was_leader:                                               # if the neighbor was the leader
-                    print('Neighbor was leader, starting election')                   # print to console
+                    print('Previous neighbor was leader, starting election')          # print to console
                     start_voting()                                                    # start an election
 
 
@@ -130,63 +130,68 @@ def heartbeat():
 def server_command(command):
     match command.split('_'):
         # Sends the chat message to all clients other than the sender
-        case ['#CHAT', sender_ip, sender_response_port, message]:
-            message_to_clients(message, (sender_ip, int(sender_response_port)))
+        case ['#CHAT', address_string, message]:
+            address = utility.string_to_address(address_string)
+            message_to_clients(message, address)
         # Add the provided client to this server's clients list
         # If the request came from the client (instead of another server) announce to the other clients
         # and inform the other servers
-        case ['#JOIN', 'client', inform_others, ip, port]:
+        case ['#JOIN', 'client', inform_others, address_string]:
+            address = utility.string_to_address(address_string)
             if int(inform_others):  # Sending a 0/1 and casting to int is the easiest way I found to send bools as text
-                message_to_clients(f'{ip} has joined the chat')
-                message_to_servers(f'#JOIN_client_0_{ip}_{port}')
-            if (ip, int(port)) not in clients:  # We NEVER want duplicates in our lists
-                print(f'Adding {(ip, port)} to clients')
-                clients.append((ip, int(port)))
+                message_to_clients(f'{address[0]} has joined the chat')
+                message_to_servers(f'#JOIN_client_0_{address}')
+            if address not in clients:  # We NEVER want duplicates in our lists
+                print(f'Adding {address} to clients')
+                clients.append(address)
         # Remove the provided client from this server's clients list
         # If the request came from the client (instead of another server) announce to the other clients
         # and inform the other servers
-        case ['#QUIT', 'client', inform_others, ip, port]:
-            print(f'Removing {(ip, port)} from clients')
-            clients.remove((ip, int(port)))
+        case ['#QUIT', 'client', inform_others, address_string]:
+            address = utility.string_to_address(address_string)
+            print(f'Removing {address} from clients')
+            clients.remove(address)
             if int(inform_others):
-                utility.tcp_transmit_message(f'#QUIT', (ip, int(port)))
-                message_to_clients(f'{ip} has left the chat')
-                message_to_servers(f'#QUIT_client_0_{ip}_{port}')
+                utility.tcp_transmit_message(f'#QUIT', address)
+                message_to_clients(f'{address[0]} has left the chat')
+                message_to_servers(f'#QUIT_client_0_{address}')
         # Add the provided server to this server's servers list
         # If the request came from the server to be added send it the whole clients and servers list
         # and inform the other servers
-        case ['#JOIN', 'server', inform_others, ip, port]:
+        case ['#JOIN', 'server', inform_others, address_string]:
+            address = utility.string_to_address(address_string)
             if int(inform_others):
-                transmit_state((ip, int(port)))
-                message_to_servers(f'#JOIN_server_0_{ip}_{port}')
-            if (ip, int(port)) not in servers:  # We NEVER want duplicates in our lists
-                print(f'Adding {(ip, port)} to servers')
-                servers.append((ip, int(port)))
+                transmit_state(address)
+                message_to_servers(f'#JOIN_server_0_{address}')
+            if address not in servers:  # We NEVER want duplicates in our lists
+                print(f'Adding {address} to servers')
+                servers.append(address)
                 find_neighbor()
         # Remove the provided server from this server's servers list
         # If the request came from the server to be added inform the other servers
-        case ['#QUIT', 'server', inform_others, ip, port]:
-            server_to_remove = (ip, int(port))
-            if server_to_remove == server_address:  # If we're told to remove ourself, something is wrong
+        case ['#QUIT', 'server', inform_others, address_string]:
+            address = utility.string_to_address(address_string)
+            if address == server_address:  # If we're told to remove ourself, something is wrong
                 pass  # Will implement this later
             else:
-                print(f'Removing {(ip, port)} from servers')
-                servers.remove((ip, int(port)))
+                print(f'Removing {address} from servers')
+                servers.remove(address)
                 if int(inform_others):
-                    message_to_servers(f'#QUIT_server_0_{ip}_{port}')
+                    message_to_servers(f'#QUIT_server_0_{address}')
                 find_neighbor()
         # Receive a vote in the election
         # If I get a vote for myself then I've won the election
         # If not, then vote
-        case ['#VOTE', ip, port]:
-            address = (ip, int(port))
+        case ['#VOTE', address_string]:
+            address = utility.string_to_address(address_string)
             if address == server_address:
                 set_leader(server_address)
             else:
-                start_voting((ip, int(port)))
+                start_voting(address)
         # Declaration that another server is the leader
-        case ['#LEAD', ip, port]:
-            set_leader((ip, int(port)))
+        case ['#LEAD', address_string]:
+            address = utility.string_to_address(address_string)
+            set_leader(address)
 
 
 # Sends message to all clients, excluding the sender
@@ -205,7 +210,7 @@ def message_to_clients(message, sender=server_address):
                 print(f'Failed send to {client}')
                 print(f'Removing {client} from clients')
                 clients.remove(client)
-                message_to_servers(f'#QUIT_client_0_{client[0]}_{client[1]}')
+                message_to_servers(f'#QUIT_client_0_{client}')
                 message_to_clients(f'{client[0]} is unreachable')
 
 
@@ -220,9 +225,9 @@ def message_to_servers(message):
 # Transmits the whole clients and servers lists to the provided address
 def transmit_state(address):
     for client in clients:
-        utility.tcp_transmit_message(f'#JOIN_client_0_{client[0]}_{client[1]}', address)
+        utility.tcp_transmit_message(f'#JOIN_client_0_{client}', address)
     for server in servers:
-        utility.tcp_transmit_message(f'#JOIN_server_0_{server[0]}_{server[1]}', address)
+        utility.tcp_transmit_message(f'#JOIN_server_0_{server}', address)
 
 
 """
@@ -265,7 +270,7 @@ def start_voting(address=server_address):
     global is_voting
     vote_for = min(address, server_address)
     if vote_for != server_address or not is_voting:
-        message = f'#VOTE_{vote_for[0]}_{vote_for[1]}'
+        message = f'#VOTE_{vote_for}'
         print(f'Send "{message}" to {vote_for}')
         utility.tcp_transmit_message(message, neighbor)
     is_voting = True
@@ -280,7 +285,7 @@ def set_leader(address):
     is_voting = False
     if is_leader:
         print('I am the leader')
-        message = f'#LEAD_{SERVER_IP}_{server_port}'
+        message = f'#LEAD_{server_address}'
         message_to_clients(message)
         message_to_servers(message)
     else:
