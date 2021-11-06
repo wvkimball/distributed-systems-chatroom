@@ -15,13 +15,17 @@ client_address = client_socket.getsockname()
 # Global variable to save the server address
 server_address = None
 
+# Flag to enable stopping the client
+is_active = True
+
 
 def main():
     utility.cls()
     broadcast_for_server()
 
     threading.Thread(target=transmit_messages).start()
-    threading.Thread(target=receive_messages).start()
+    threading.Thread(target=tcp_listener).start()
+    threading.Thread(target=multicast_listener).start()
 
 
 # Broadcasts that this client is looking for a server
@@ -37,8 +41,8 @@ def broadcast_for_server():
             data, address = broadcast_socket.recvfrom(1024)
             if data.startswith(f'{utility.RESPONSE_CODE}_{client_address[0]}'.encode()):
                 message = data.decode().split('_')
-                print("Found server at", address[0])
                 set_server_address((address[0], int(message[2])))
+                print(f'Found server at {server_address[0]}')
                 break
         except TimeoutError:
             sleep(3)
@@ -49,21 +53,20 @@ def broadcast_for_server():
 
 # Sets the server address which messages will be sent to
 def set_server_address(address: tuple):
-    global server_ip, server_port, server_address
-    server_ip, server_port = address
+    global server_address
     server_address = address
     # print(f'\rServer address set to {address}\nYou: ', end='')
 
 
 # Function to handle sending messages to the server
 def transmit_messages():
-    while True:
+    while is_active:
         message = input('\rYou: ')
         # Send message
         if message[0] == '#':
             client_command(message)
         else:
-            message_to_server(format_chat(message))
+            message_to_server(f'#CHAT_{client_address}_{message}')
 
 
 # Sends a message to the server
@@ -76,26 +79,43 @@ def message_to_server(message):
         broadcast_for_server()
 
 
-def format_chat(message):
-    return f'#CHAT_{client_address}_{message}'
-
-
-# Function to handle receiving messages from the server
-def receive_messages():
-    while True:
+# Function to handle receiving tcp messages from the server
+# Now that multicast has been implemented, these are just pings
+# I might expand this for certain server commands later
+def tcp_listener():
+    while is_active:
         client, address = client_socket.accept()
         data = client.recv(BUFFER_SIZE).decode()
-        if data[0] == '#':
-            server_command(data)
-        else:
-            data = data.split('_')
-            message = data[0]
-            sender = data[1]
-            if sender == server_ip:
-                print(f'\r{message}')
-            else:
-                print(f'\r{sender}: {message}')
-            print('\rYou: ', end='')
+        parse_message(data)
+
+
+# Function to listen for messages multicasted to the client multicast group
+def multicast_listener():
+    # Create the socket
+    m_listener_socket = utility.setup_multicast_listener_socket(utility.MG_CLIENT)
+
+    while is_active:
+        data, address = m_listener_socket.recvfrom(BUFFER_SIZE)
+        data = data.decode()
+        data = data[data.index(')') + 1:]  # Trim the sending server address from the message
+        m_listener_socket.sendto(b'ack', address)
+        parse_message(data)
+
+
+# Function to parse incoming messages to the client
+def parse_message(data):
+    if data[0] == '#':
+        server_command(data)
+    else:
+        data = data.split('_')
+        message = data[0]
+        sender = utility.string_to_address(data[1])
+
+        if sender == server_address:
+            print(f'\r{message}')
+        elif sender != client_address:
+            print(f'\r{sender[0]}: {message}')
+        print('\rYou: ' if is_active else '', end='')
 
 
 # Handle commands entered by this client
@@ -103,16 +123,16 @@ def client_command(command):
     match command.split('_'):
         case ['#QUIT']:
             message_to_server(f'#QUIT_client_1_{client_address}')
+            client_socket.close()
+            global is_active
+            is_active = False
+            # print('\rGoodbye!')
             sys.exit(0)
 
 
 # Handle commands received by this client from the server
 def server_command(command):
     match command.split('_'):
-        case ['#QUIT']:
-            print('\rGoodbye!')
-            client_socket.close()
-            sys.exit(0)
         case ['#LEAD', address_string]:
             set_server_address(utility.string_to_address(address_string))
 
