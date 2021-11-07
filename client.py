@@ -130,6 +130,8 @@ def client_command(command):
             sys.exit(0)
         case ['#NICK', nickname]:
             message_to_server(f'#NICK_1_{client_address}_{nickname}')
+        case ['#CLEAR']:
+            utility.cls()
 
 
 # Handle commands received by this client from the server
