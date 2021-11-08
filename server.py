@@ -1,6 +1,7 @@
 #!/usr/bin/env python3.10
 
 import socket
+import sys
 import threading
 from utility import BUFFER_SIZE
 import utility
@@ -21,6 +22,9 @@ leader_address = None
 is_leader = False
 is_voting = False
 neighbor = None
+
+# Flag to enable stopping the client
+is_active = True
 
 
 def main():
@@ -45,7 +49,7 @@ def startup_broadcast():
         broadcast_socket.sendto(utility.BROADCAST_CODE.encode(), ('<broadcast>', utility.BROADCAST_PORT))
         print("Looking for other servers")
 
-        # Wait for a response packet. If no packet has been received in 2 seconds, sleep then broadcast again
+        # Wait for a response packet. If no packet has been received in 1 second, broadcast again
         try:
             data, address = broadcast_socket.recvfrom(1024)
             if data.startswith(f'{utility.RESPONSE_CODE}_{server_address[0]}'.encode()):
@@ -71,52 +75,77 @@ def broadcast_listener():
 
     listener_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # create UDP socket
     listener_socket.bind(('', utility.BROADCAST_PORT))
+    listener_socket.settimeout(2)
 
-    while True:
-        data, address = listener_socket.recvfrom(BUFFER_SIZE)  # wait for a packet
-        if is_leader and data.startswith(utility.BROADCAST_CODE.encode()):
-            print(f'Received broadcast from {address[0]}, replying with response code')
-            # Respond with the response code, the IP we're responding to, and the the port we're listening with
-            listener_socket.sendto(str.encode(f'{utility.RESPONSE_CODE}_{address[0]}_{server_address[1]}'), address)
+    while is_active:
+        try:
+            data, address = listener_socket.recvfrom(BUFFER_SIZE)  # wait for a packet
+        except TimeoutError:
+            pass
+        else:
+            if is_leader and data.startswith(utility.BROADCAST_CODE.encode()):
+                print(f'Received broadcast from {address[0]}, replying with response code')
+                # Respond with the response code, the IP we're responding to, and the the port we're listening with
+                listener_socket.sendto(str.encode(f'{utility.RESPONSE_CODE}_{address[0]}_{server_address[1]}'), address)
+
+    print('Broadcast listener closing')
+    listener_socket.close()
+    sys.exit(0)
 
 
 # Function to manage the chat
 # passes valid commands to server_command
 def tcp_listener():
-    while True:
-        client, address = server_socket.accept()
-        message = client.recv(BUFFER_SIZE).decode()
-        if message != '#PING':  # We don't print pings since that gets a bit overwhelming
-            print(f'Received "{message}" from {address}')
-        if message[0] == '#':
-            server_command(message)
+    server_socket.settimeout(2)
+    while is_active:
+        try:
+            client, address = server_socket.accept()
+        except TimeoutError:
+            pass
         else:
-            raise ValueError('Invalid message received')
+            message = client.recv(BUFFER_SIZE).decode()
+            if message != '#PING':  # We don't print pings since that gets a bit overwhelming
+                print(f'Received "{message}" from {address}')
+            if message[0] == '#':
+                server_command(message)
+            else:
+                raise ValueError('Invalid message received')
+
+    print('Unicast listener closing')
+    server_socket.close()
+    sys.exit(0)
 
 
 # Listens for multicasted messages
 def multicast_listener():
     # Create the socket
     m_listener_socket = utility.setup_multicast_listener_socket(utility.MG_SERVER)
+    m_listener_socket.settimeout(2)
 
-    while True:
-        data, address = m_listener_socket.recvfrom(BUFFER_SIZE)
-        if data.startswith(f'{server_address}'.encode()):
-            continue  # If we've picked up our own message, ignore it
-        data = data.decode()
-        message = data[data.index(')')+1:]  # Trim the sending server address from the message
-        print(f'Received multicast {message} from {address}, sending acknowledgement')
-        m_listener_socket.sendto(b'ack', address)
-        if message[0] == '#':
-            server_command(message)
+    while is_active:
+        try:
+            data, address = m_listener_socket.recvfrom(BUFFER_SIZE)
+        except TimeoutError:
+            pass
         else:
-            raise ValueError('Invalid message received')
+            if data.startswith(f'{server_address}'.encode()):
+                continue  # If we've picked up our own message, ignore it
+            data = data.decode()
+            message = data[data.index(')')+1:]  # Trim the sending server address from the message
+            print(f'Received multicast {message} from {address}, sending acknowledgement')
+            m_listener_socket.sendto(b'ack', address)
+            if message[0] == '#':
+                server_command(message)
+            else:
+                raise ValueError('Invalid message received')
+
+    print('Multicast listener closing')
+    m_listener_socket.close()
+    sys.exit(0)
 
 
 # Transmits multicast messages and checks how many responses are received
 def multicast_transmit_message(message, group=utility.MG_SERVER):
-    expected_responses = None
-    send_to = None
     match group:
         case utility.MG_SERVER:
             expected_responses = len(servers) - 1
@@ -162,7 +191,7 @@ def multicast_transmit_message(message, group=utility.MG_SERVER):
 # Function to ping the neighbor, and respond if unable to do so
 def heartbeat():
     missed_beats = 0
-    while True:
+    while is_active:
         if neighbor:
             try:
                 utility.tcp_transmit_message('#PING', neighbor)
@@ -179,6 +208,9 @@ def heartbeat():
                 if neighbor_was_leader:                                               # if the neighbor was the leader
                     print('Previous neighbor was leader, starting election')          # print to console
                     start_voting()                                                    # start an election
+
+    print('Heartbeat thread closing')
+    sys.exit(0)
 
 
 # Function to handle the various commands that the server can receive
@@ -214,14 +246,11 @@ def server_command(command):
             address = utility.string_to_address(address_string)
             print(f'Removing {address} from clients')
             try:
-                if int(inform_others):
-                    message_to_clients('#PING')  # Sending a ping as a multicast to end the client's m_listener
                 clients.remove(address)
                 remove_nickname(address)
             except ValueError:
                 print(f'{address} was not in clients, it was likely removed by the ping')
             if int(inform_others):
-                tcp_transmit_message(f'Goodbye_{server_address}_', address)  # Say goodbye to the client
                 message_to_clients(f'{address[0]} has left the chat')
                 message_to_servers(f'#QUIT_client_0_{address}')
         # Add the provided server to this server's servers list
@@ -264,6 +293,14 @@ def server_command(command):
                 set_leader(address)
                 message = f'#LEAD_{leader_address}'
                 tcp_transmit_message(message, neighbor)
+        case ['#DOWN', inform_others]:
+            if int(inform_others):
+                # tcp_to_servers('#DOWN_0')
+                message_to_clients('#DOWN')
+                message_to_servers('#DOWN_0')
+            print(f'Shutting down server at {server_address}')
+            global is_active
+            is_active = False
 
 
 # If a specific client is provided, ping that client
@@ -288,9 +325,8 @@ def ping_clients(client_to_ping=None):
                 print(f'{client} was not in clients')
 
 
-# Sends message to all clients, excluding the sender
+# Sends message to all clients, specifying who the sender is
 # If the message is "purely" a server message, then the server is the sender
-# and the message is sent to all clients
 def message_to_clients(message, sender=server_address):
     to_send = message
     if message[0] != '#':
@@ -317,6 +353,12 @@ def remove_nickname(address):
 # Sends a multicast message to all servers
 def message_to_servers(message):
     multicast_transmit_message(message, utility.MG_SERVER)
+
+
+def tcp_to_servers(message):
+    for server in servers:
+        if server != server_address:
+            tcp_transmit_message(message, server)
 
 
 # Transmits the whole clients and servers lists to the provided address

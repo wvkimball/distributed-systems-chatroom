@@ -62,9 +62,16 @@ def set_server_address(address: tuple):
 def transmit_messages():
     while is_active:
         message = input('\rYou: ')
+
+        # If the flag has been changed while waiting for input, we exit
+        if not is_active:
+            sys.exit(0)
+
         # Send message
         if len(message) > BUFFER_SIZE / 2:
             print('Message is too long')
+        elif len(message) == 0:
+            continue
         elif message[0] == '#':
             client_command(message)
         else:
@@ -85,23 +92,39 @@ def message_to_server(message):
 # Now that multicast has been implemented, these are just pings
 # I might expand this for certain server commands later
 def tcp_listener():
+    client_socket.settimeout(2)
     while is_active:
-        client, address = client_socket.accept()
-        data = client.recv(BUFFER_SIZE).decode()
-        parse_message(data)
+        try:
+            client, address = client_socket.accept()
+        except TimeoutError:
+            pass
+        else:
+            data = client.recv(BUFFER_SIZE).decode()
+            parse_message(data)
+
+    client_socket.close()
+    sys.exit(0)
 
 
 # Function to listen for messages multicasted to the client multicast group
 def multicast_listener():
     # Create the socket
     m_listener_socket = utility.setup_multicast_listener_socket(utility.MG_CLIENT)
+    m_listener_socket.settimeout(2)
 
     while is_active:
-        data, address = m_listener_socket.recvfrom(BUFFER_SIZE)
-        data = data.decode()
-        data = data[data.index(')') + 1:]  # Trim the sending server address from the message
-        m_listener_socket.sendto(b'ack', address)
-        parse_message(data)
+        try:
+            data, address = m_listener_socket.recvfrom(BUFFER_SIZE)
+        except TimeoutError:
+            pass
+        else:
+            data = data.decode()
+            data = data[data.index(')') + 1:]  # Trim the sending server address from the message
+            m_listener_socket.sendto(b'ack', address)
+            parse_message(data)
+
+    m_listener_socket.close()
+    sys.exit(0)
 
 
 # Function to parse incoming messages to the client
@@ -124,14 +147,18 @@ def client_command(command):
     match command.split('_'):
         case ['#QUIT']:
             message_to_server(f'#QUIT_client_1_{client_address}')
-            client_socket.close()
             global is_active
             is_active = False
+            print('Goodbye!')
             sys.exit(0)
         case ['#NICK', nickname]:
             message_to_server(f'#NICK_1_{client_address}_{nickname}')
         case ['#CLEAR']:
             utility.cls()
+        case ['#DOWN', '0']:
+            message_to_server('#DOWN_0')  # This only shuts down the lead server
+        case ['#DOWN']:
+            message_to_server('#DOWN_1')  # This triggers a shutdown for
 
 
 # Handle commands received by this client from the server
@@ -139,6 +166,10 @@ def server_command(command):
     match command.split('_'):
         case ['#LEAD', address_string]:
             set_server_address(utility.string_to_address(address_string))
+        case ['#DOWN']:
+            global is_active
+            is_active = False
+            print('\rProgram is shutting down, press enter to exit.', end='')
 
 
 if __name__ == '__main__':
