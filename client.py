@@ -75,6 +75,8 @@ def transmit_messages():
             continue
         elif message[0] == '#':
             client_command(message)
+        elif '_' in message:
+            print('Messages may not contain underscores')
         else:
             message_to_server(f'#CHAT_{client_address}_{message}')
 
