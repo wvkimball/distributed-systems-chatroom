@@ -202,7 +202,7 @@ def heartbeat():
                 print(f'{missed_beats} failed pings to neighbor, remove {neighbor}')  # print to console
                 servers.remove(neighbor)                                              # remove the missing server
                 missed_beats = 0                                                      # reset the count
-                message_to_servers(f'#QUIT_server_0_{neighbor}')                      # inform the others
+                tcp_to_servers(f'#QUIT_server_0_{neighbor}')                          # inform the others
                 neighbor_was_leader = neighbor == leader_address                      # check if neighbor was leader
                 find_neighbor()                                                       # find a new neighbor
                 if neighbor_was_leader:                                               # if the neighbor was the leader
@@ -356,9 +356,11 @@ def message_to_servers(message):
 
 
 def tcp_to_servers(message):
-    for server in servers:
-        if server != server_address:
+    for server in [s for s in servers if s != server_address]:
+        try:
             tcp_transmit_message(message, server)
+        except (ConnectionRefusedError, TimeoutError):
+            print(f'Unable to send to {server}')
 
 
 # Transmits the whole clients and servers lists to the provided address
