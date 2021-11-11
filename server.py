@@ -26,6 +26,10 @@ neighbor = None
 # Flag to enable stopping the client
 is_active = True
 
+# Counts for server and client multicasts
+server_multi_count = 0
+client_multi_count = 0
+
 
 def main():
     utility.cls()
@@ -33,7 +37,8 @@ def main():
 
     threading.Thread(target=broadcast_listener).start()
     threading.Thread(target=tcp_listener).start()
-    threading.Thread(target=multicast_listener).start()
+    threading.Thread(target=multicast_listener, args=(utility.MG_SERVER, 'Server')).start()
+    threading.Thread(target=multicast_listener, args=(utility.MG_CLIENT, 'Client')).start()
     threading.Thread(target=heartbeat).start()
 
 
@@ -117,9 +122,9 @@ def tcp_listener():
 
 
 # Listens for multicasted messages
-def multicast_listener():
+def multicast_listener(group, name):
     # Create the socket
-    m_listener_socket = utility.setup_multicast_listener_socket(utility.MG_SERVER)
+    m_listener_socket = utility.setup_multicast_listener_socket(group)
     m_listener_socket.settimeout(2)
 
     while is_active:
@@ -132,32 +137,44 @@ def multicast_listener():
                 continue  # If we've picked up our own message, ignore it
             data = data.decode()
             message = data[data.index(')')+1:]  # Trim the sending server address from the message
-            print(f'Received multicast {message} from {address}, sending acknowledgement')
+            print(f'{name} listener received multicast "{message}" from {address}')
             m_listener_socket.sendto(b'ack', address)
-            if message[0] == '#':
-                server_command(message)
-            else:
-                raise ValueError('Invalid message received')
+            parse_multicast(message, group)
 
-    print('Multicast listener closing')
+    print(f'Multicast {name} listener closing')
     m_listener_socket.close()
     sys.exit(0)
 
 
-# Transmits multicast messages and checks how many responses are received
-def multicast_transmit_message(message, group=utility.MG_SERVER):
+def parse_multicast(message, group):
     match group:
         case utility.MG_SERVER:
-            expected_responses = len(servers) - 1
+            if message[0] == '#':
+                server_command(message)
+            else:
+                raise ValueError('Invalid message received')
+        case utility.MG_CLIENT:
+            pass
+
+
+# Transmits multicast messages and checks how many responses are received
+def multicast_transmit_message(message, group=utility.MG_SERVER):
+    len_other_servers = len(servers) - 1  # We expect responses from every other than the sender
+    len_clients = len(clients)
+
+    match group:
+        case utility.MG_SERVER:
+            if not len_other_servers:  # If there are no other servers, don't bother transmitting
+                return
+            expected_responses = len_other_servers
             send_to = 'servers'
         case utility.MG_CLIENT:
-            expected_responses = len(clients)
+            if not len_clients:  # If there are no clients, don't bother transmitting
+                return
+            expected_responses = len_clients + len_other_servers
             send_to = 'clients'
         case _:
             raise ValueError('Invalid multicast group')
-
-    if not expected_responses:  # If there are no expected responses, then don't bother transmitting
-        return
 
     print(f'Sending multicast "{message}" to {send_to}')
 

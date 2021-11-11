@@ -6,8 +6,9 @@ import struct
 
 # Constants
 # By changing the port numbers, there can be more than one chat on a network
-BROADCAST_PORT = 10002
-M_LISTEN_PORT = 10001
+BROADCAST_PORT = 10001
+ML_SERVER_PORT = 10002
+ML_CLIENT_PORT = 10003
 BUFFER_SIZE = 1024
 # Random code to broadcast / listen for to filter out other network traffic
 BROADCAST_CODE = '9310e231f20a07cb53d96b90a978163d'
@@ -16,8 +17,8 @@ RESPONSE_CODE = 'f56ddd73d577e38c45769dcd09dc9d99'
 # Addresses for multicast groups
 # Block 224.3.0.64-224.3.255.255 is all unassigned
 # Choices are arbitrary for now
-MG_SERVER = ('224.3.100.255', M_LISTEN_PORT)
-MG_CLIENT = ('224.3.200.255', M_LISTEN_PORT)
+MG_SERVER = ('224.3.100.255', ML_SERVER_PORT)
+MG_CLIENT = ('224.3.200.255', ML_CLIENT_PORT)
 
 
 # Function to get the ip address of the computer running the program
