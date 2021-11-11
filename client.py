@@ -157,9 +157,9 @@ def client_command(command):
         case ['#CLEAR']:
             utility.cls()
         case ['#DOWN', '0']:
-            message_to_server('#DOWN_0')  # This only shuts down the lead server
+            message_to_server('#DOWN_0')  # This only shuts down the leader server (for testing voting)
         case ['#DOWN']:
-            message_to_server('#DOWN_1')  # This triggers a shutdown for
+            message_to_server('#DOWN_1')  # This triggers a shutdown for all servers and clients
 
 
 # Handle commands received by this client from the server
