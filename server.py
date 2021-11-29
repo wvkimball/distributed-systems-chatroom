@@ -50,7 +50,7 @@ def startup_broadcast():
 
     # 5 attempts are made to find another server
     # After this, the server assumes it is the only one and considers itself leader
-    for i in range(0, 5):
+    for i in range(0, utility.SERVER_BROADCAST_ATTEMPTS):
         broadcast_socket.sendto(utility.BROADCAST_CODE.encode(), ('<broadcast>', utility.BROADCAST_PORT))
         print("Looking for other servers")
 

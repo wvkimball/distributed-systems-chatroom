@@ -14,6 +14,8 @@ BUFFER_SIZE = 1024
 BROADCAST_CODE = '9310e231f20a07cb53d96b90a978163d'
 # Random code to respond with
 RESPONSE_CODE = 'f56ddd73d577e38c45769dcd09dc9d99'
+# Number of broadcasts made by a server at startup
+SERVER_BROADCAST_ATTEMPTS = 5
 # Addresses for multicast groups
 # Block 224.3.0.64-224.3.255.255 is all unassigned
 # Choices are arbitrary for now
