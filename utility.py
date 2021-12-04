@@ -3,13 +3,14 @@
 import socket
 import os
 import struct
+import ast
 
 # Constants
 # By changing the port numbers, there can be more than one chat on a network
 BROADCAST_PORT = 10001
 ML_SERVER_PORT = 10002
 ML_CLIENT_PORT = 10003
-BUFFER_SIZE = 1024
+BUFFER_SIZE = 4096
 # Random code to broadcast / listen for to filter out other network traffic
 BROADCAST_CODE = '9310e231f20a07cb53d96b90a978163d'
 # Random code to respond with
@@ -45,7 +46,7 @@ def tcp_transmit_message(message, address):
     transmit_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     transmit_socket.settimeout(1)
     transmit_socket.connect(address)
-    transmit_socket.send(message.encode())
+    transmit_socket.send(message)
     transmit_socket.close()
 
 
@@ -53,12 +54,6 @@ def tcp_transmit_message(message, address):
 # Source: https://stackoverflow.com/questions/517970/how-to-clear-the-interpreter-console
 def cls():
     os.system('cls' if os.name == 'nt' else 'clear')
-
-
-# Converts the string representation of an address tuple back into a tuple
-def string_to_address(address_string):
-    a = address_string[1:-1].split(', ')
-    return a[0][1:-1], int(a[1])
 
 
 # Create TCP socket for listening to unicast messages
@@ -91,3 +86,16 @@ def setup_multicast_listener_socket(group):
     mreq = struct.pack('4sL', group, socket.INADDR_ANY)
     s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
     return s
+
+
+def encode_message(command, sender, contents='', clock=None):
+    message_dict = {'command': command, 'sender': sender, 'contents': contents, 'clock': clock}
+    return repr(message_dict).encode()
+
+
+def decode_message(message):
+    return ast.literal_eval(message.decode())
+
+
+def format_join_quit(node_type, inform_others, address):
+    return {'node_type': node_type, 'inform_others': inform_others, 'address': address}

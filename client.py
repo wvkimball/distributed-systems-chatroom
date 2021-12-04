@@ -1,11 +1,11 @@
 #!/usr/bin/env python3.10
 
-import socket
 import threading
 import sys
-from utility import BUFFER_SIZE
-import utility
 from time import sleep
+
+from utility_new import BUFFER_SIZE, encode_message, decode_message, format_join_quit
+import utility_new as utility
 
 # Create TCP socket for listening to unicast messages
 # The address tuple of this socket is the unique identifier for the client
@@ -18,6 +18,7 @@ server_address = None
 # Flag to enable stopping the client
 is_active = True
 
+clock = [0]
 
 def main():
     utility.cls()
@@ -31,7 +32,7 @@ def main():
 # Broadcasts that this client is looking for a server
 # This shouts into the void until a server is found
 def broadcast_for_server():
-    broadcast_socket = utility.setup_udp_broadcast_socket(timeout=5)
+    broadcast_socket = utility.setup_udp_broadcast_socket(timeout=2)
 
     while True:
         broadcast_socket.sendto(utility.BROADCAST_CODE.encode(), ('<broadcast>', utility.BROADCAST_PORT))
@@ -49,14 +50,13 @@ def broadcast_for_server():
                 break
 
     broadcast_socket.close()
-    message_to_server(f'#JOIN_client_1_{client_address}')
+    message_to_server('JOIN', format_join_quit('client', True, client_address))
 
 
 # Sets the server address which messages will be sent to
 def set_server_address(address: tuple):
     global server_address
     server_address = address
-    # print(f'\rServer address set to {address}\nYou: ', end='')
 
 
 # Function to handle sending messages to the server
@@ -69,31 +69,17 @@ def transmit_messages():
             sys.exit(0)
 
         # Send message
-        if len(message) > BUFFER_SIZE / 2:
+        if len(message) > BUFFER_SIZE / 10:
             print('Message is too long')
         elif len(message) == 0:
             continue
         elif message[0] == '#':
             client_command(message)
-        elif '_' in message:
-            print('Messages may not contain underscores')
         else:
-            message_to_server(f'#CHAT_{client_address}_{message}')
-
-
-# Sends a message to the server
-# If the server isn't there, the client starts searching again
-def message_to_server(message):
-    try:
-        utility.tcp_transmit_message(message, server_address)
-    except (ConnectionRefusedError, TimeoutError):
-        print('\rError sending message, searching for server again')
-        broadcast_for_server()
+            message_to_server('CHAT', message)
 
 
 # Function to handle receiving tcp messages from the server
-# Now that multicast has been implemented, these are just pings
-# I might expand this for certain server commands later
 def tcp_listener():
     client_socket.settimeout(2)
     while is_active:
@@ -102,8 +88,8 @@ def tcp_listener():
         except TimeoutError:
             pass
         else:
-            data = client.recv(BUFFER_SIZE).decode()
-            parse_message(data)
+            message = decode_message(client.recv(BUFFER_SIZE))
+            server_command(message)
 
     client_socket.close()
     sys.exit(0)
@@ -111,6 +97,7 @@ def tcp_listener():
 
 # Function to listen for messages multicasted to the client multicast group
 def multicast_listener():
+    sleep(0.5)
     # Create the socket
     m_listener_socket = utility.setup_multicast_listener_socket(utility.MG_CLIENT)
     m_listener_socket.settimeout(2)
@@ -121,58 +108,68 @@ def multicast_listener():
         except TimeoutError:
             pass
         else:
-            data = data.decode()
-            data = data[data.index(')') + 1:]  # Trim the sending server address from the message
+            message = decode_message(data)
             m_listener_socket.sendto(b'ack', address)
-            parse_message(data)
+
+            clock[0] += 1
+            for i in range(clock[0], message['clock'][0]):
+                message_to_server('MSG', {'list': 'client', 'clock': [i]})
+
+            server_command(message)
 
     m_listener_socket.close()
     sys.exit(0)
 
 
-# Function to parse incoming messages to the client
-def parse_message(data):
-    if data[0] == '#':
-        server_command(data)
-    else:
-        message, sender, nickname = data.split('_')
-        sender = utility.string_to_address(sender)
-
-        if sender == server_address:
-            print(f'\r{message}')
-        elif sender != client_address:
-            print(f'\r{nickname if nickname else sender[0]}: {message}')
-        print('\rYou: ' if is_active else '', end='')
+# Sends a message to the server
+# If the server isn't there, the client starts searching again
+def message_to_server(command, contents):
+    message_bytes = encode_message(command, client_address, contents)
+    try:
+        utility.tcp_transmit_message(message_bytes, server_address)
+    except (ConnectionRefusedError, TimeoutError):
+        print('\rError sending message, searching for server again')
+        broadcast_for_server()
 
 
 # Handle commands entered by this client
-def client_command(command):
-    match command.split('_'):
-        case ['#QUIT']:
-            message_to_server(f'#QUIT_client_1_{client_address}')
-            global is_active
-            is_active = False
-            print('Goodbye!')
-            sys.exit(0)
-        case ['#NICK', nickname]:
-            message_to_server(f'#NICK_1_{client_address}_{nickname}')
+def client_command(message):
+    match message.split('_'):
         case ['#CLEAR']:
             utility.cls()
+        case ['#QUIT']:
+            message_to_server('QUIT', format_join_quit('client', True, client_address))
+            down()
+            print('\rGoodbye!')
         case ['#DOWN', '0']:
-            message_to_server('#DOWN_0')  # This only shuts down the leader server (for testing voting)
+            message_to_server('DOWN', False)
         case ['#DOWN']:
-            message_to_server('#DOWN_1')  # This triggers a shutdown for all servers and clients
+            message_to_server('DOWN', True)
 
 
 # Handle commands received by this client from the server
-def server_command(command):
-    match command.split('_'):
-        case ['#LEAD', address_string]:
-            set_server_address(utility.string_to_address(address_string))
-        case ['#DOWN']:
-            global is_active
-            is_active = False
+def server_command(message):
+    match message:
+        case {'command': 'CHAT', 'contents': {'chat_sender': address, 'chat_contents': chat_contents}}:
+            if address != client_address:
+                print(f'\r{address[0]}: {chat_contents}')
+                print('\rYou: ' if is_active else '', end='')
+        case {'command': 'SERV'}:
+            print(f'\r{message["contents"]}')
+            print('\rYou: ' if is_active else '', end='')
+        case {'command': 'LEAD', 'sender': address}:
+            set_server_address(address)
+        case {'command': 'CLOCK', 'contents': client_clock}:
+            global clock
+            clock[0] = client_clock[0]
+        case {'command': 'DOWN'}:
+            down()
             print('\rProgram is shutting down, press enter to exit.', end='')
+
+
+def down():
+    global is_active
+    is_active = False
 
 
 if __name__ == '__main__':

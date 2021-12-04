@@ -3,9 +3,10 @@
 import socket
 import sys
 import threading
-from utility import BUFFER_SIZE
+from utility_new import BUFFER_SIZE, encode_message, decode_message, format_join_quit
 import utility
 from time import sleep
+
 
 # Create TCP socket for listening to unicast messages
 # The address tuple of this socket is the unique identifier for the server
@@ -14,7 +15,6 @@ server_address = server_socket.getsockname()
 
 # Lists for connected clients and servers
 clients = []
-nicknames = {}
 servers = [server_address]  # Server list starts with this server in it
 
 # Variables for leadership and voting
@@ -27,9 +27,14 @@ neighbor = None
 is_active = True
 
 # Counts for server and client multicasts
-server_multi_count = 0
-client_multi_count = 0
+server_clock = [0]
+client_clock = [0]
 
+# Dicts for the server and client mulitcast messages
+server_multi_msgs = {}
+client_multi_msgs = {}
+# How many messages we want to store in the dictionaries
+keep_msgs = 5
 
 def main():
     utility.cls()
@@ -37,9 +42,9 @@ def main():
 
     threading.Thread(target=broadcast_listener).start()
     threading.Thread(target=tcp_listener).start()
-    threading.Thread(target=multicast_listener, args=(utility.MG_SERVER, 'Server')).start()
-    threading.Thread(target=multicast_listener, args=(utility.MG_CLIENT, 'Client')).start()
     threading.Thread(target=heartbeat).start()
+    threading.Thread(target=multicast_listener, args=(utility.MG_SERVER,)).start()
+    threading.Thread(target=multicast_listener, args=(utility.MG_CLIENT,)).start()
 
 
 # Broadcasts looking for another active server
@@ -60,7 +65,8 @@ def startup_broadcast():
             if data.startswith(f'{utility.RESPONSE_CODE}_{server_address[0]}'.encode()):
                 print("Found server at", address[0])
                 response_port = int(data.decode().split('_')[2])
-                tcp_transmit_message(f'#JOIN_server_1_{server_address}', (address[0], response_port))
+                join_contents = {'node_type': 'server', 'inform_others': True, 'address': server_address}
+                tcp_transmit_message('JOIN', join_contents, (address[0], response_port))
                 got_response = True
                 set_leader((address[0], response_port))
                 break
@@ -76,7 +82,7 @@ def startup_broadcast():
 # Function to listen for broadcasts from clients/servers and respond when a broadcast is heard
 # Only the leader responds to broadcasts
 def broadcast_listener():
-    print('Server up and running at {}'.format(server_address))
+    print(f'Server up and running at {server_address}')
 
     listener_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # create UDP socket
     listener_socket.bind(('', utility.BROADCAST_PORT))
@@ -98,31 +104,20 @@ def broadcast_listener():
     sys.exit(0)
 
 
-# Function to manage the chat
-# passes valid commands to server_command
-def tcp_listener():
-    server_socket.settimeout(2)
-    while is_active:
-        try:
-            client, address = server_socket.accept()
-        except TimeoutError:
-            pass
-        else:
-            message = client.recv(BUFFER_SIZE).decode()
-            if message != '#PING':  # We don't print pings since that gets a bit overwhelming
-                print(f'Received "{message}" from {address}')
-            if message[0] == '#':
-                server_command(message)
-            else:
-                raise ValueError('Invalid message received')
-
-    print('Unicast listener closing')
-    server_socket.close()
-    sys.exit(0)
-
-
 # Listens for multicasted messages
-def multicast_listener(group, name):
+def multicast_listener(group):
+    match group:
+        case utility.MG_SERVER:
+            name = 'server'
+            clock = server_clock
+            multi_msgs = server_multi_msgs
+        case utility.MG_CLIENT:
+            name = 'client'
+            clock = client_clock
+            multi_msgs = client_multi_msgs
+        case _:
+            raise ValueError('Invalid multicast group')
+
     # Create the socket
     m_listener_socket = utility.setup_multicast_listener_socket(group)
     m_listener_socket.settimeout(2)
@@ -133,15 +128,28 @@ def multicast_listener(group, name):
         except TimeoutError:
             pass
         else:
-            if data.startswith(f'{server_address}'.encode()):
-                continue  # If we've picked up our own message, ignore it
-            data = data.decode()
-            message = data[data.index(')')+1:]  # Trim the sending server address from the message
-            print(f'{name} listener received multicast "{message}" from {address}')
+            message = decode_message(data)
+            # If we've picked up our own message
+            # Or the message has a lower clock than the next expected message
+            # Ignore it
+            if message['sender'] == server_address or message['clock'][0] <= clock[0]:
+                continue
+
+            print(f'Listener {name} received multicast command {message["command"]} from {message["sender"]}')
             m_listener_socket.sendto(b'ack', address)
+
+            clock[0] += 1
+
+            for i in range(clock[0], message['clock'][0]):
+                print(f'Requesting missing {name} message with clock {i}')
+                tcp_transmit_message('MSG', {'list': name, 'clock': [i]}, message['sender'])
+
+            multi_msgs[str(clock[0])] = {'command': message["command"], 'contents': message["contents"]}
+            if len(multi_msgs) > keep_msgs:
+                multi_msgs.pop(next(iter(multi_msgs)))
             parse_multicast(message, group)
 
-    print(f'Multicast {name} listener closing')
+    print(f'Multicast listener {name} closing')
     m_listener_socket.close()
     sys.exit(0)
 
@@ -149,16 +157,15 @@ def multicast_listener(group, name):
 def parse_multicast(message, group):
     match group:
         case utility.MG_SERVER:
-            if message[0] == '#':
-                server_command(message)
-            else:
-                raise ValueError('Invalid message received')
+            server_command(message)
         case utility.MG_CLIENT:
             pass
+        case _:
+            raise ValueError(f'Invalid multicast group, {group =}')
 
 
 # Transmits multicast messages and checks how many responses are received
-def multicast_transmit_message(message, group=utility.MG_SERVER):
+def multicast_transmit_message(command, contents, group):
     len_other_servers = len(servers) - 1  # We expect responses from every other than the sender
     len_clients = len(clients)
 
@@ -168,15 +175,20 @@ def multicast_transmit_message(message, group=utility.MG_SERVER):
                 return
             expected_responses = len_other_servers
             send_to = 'servers'
+            multi_msgs = server_multi_msgs
+            clock = server_clock
         case utility.MG_CLIENT:
             if not len_clients:  # If there are no clients, don't bother transmitting
                 return
             expected_responses = len_clients + len_other_servers
             send_to = 'clients'
+            multi_msgs = client_multi_msgs
+            clock = client_clock
         case _:
             raise ValueError('Invalid multicast group')
 
-    print(f'Sending multicast "{message}" to {send_to}')
+    clock[0] += 1
+    print(f'Sending multicast command {command} to {send_to} with clock {clock[0]}')
 
     # Create the socket
     m_sender_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -186,9 +198,9 @@ def multicast_transmit_message(message, group=utility.MG_SERVER):
     responses = 0
 
     try:
-        # Send data to the multicast group
-        send = f'{server_address}{message}'.encode()
-        m_sender_socket.sendto(send, group)
+        # Send message to the multicast group
+        message_bytes = encode_message(command, server_address, contents, clock)
+        m_sender_socket.sendto(message_bytes, group)
 
         # Look for responses from all recipients
         while True:
@@ -204,6 +216,29 @@ def multicast_transmit_message(message, group=utility.MG_SERVER):
         if group == utility.MG_CLIENT and responses < expected_responses:
             ping_clients()
 
+    multi_msgs[str(clock[0])] = {'command': command, 'contents': contents}
+    if len(multi_msgs) > keep_msgs:
+        multi_msgs.pop(next(iter(multi_msgs)))
+
+
+# Function to listen for tcp (unicast) messages
+# passes valid commands to server_command
+def tcp_listener():
+    server_socket.settimeout(2)
+    while is_active:
+        try:
+            client, address = server_socket.accept()
+        except TimeoutError:
+            pass
+        else:
+            message = decode_message(client.recv(BUFFER_SIZE))
+            if message['command'] != 'PING':  # We don't print pings since that would be a lot
+                print(f'Command {message["command"]} received from {message["sender"]}')
+            server_command(message)
+
+    print('Unicast listener closing')
+    server_socket.close()
+
 
 # Function to ping the neighbor, and respond if unable to do so
 def heartbeat():
@@ -211,113 +246,177 @@ def heartbeat():
     while is_active:
         if neighbor:
             try:
-                utility.tcp_transmit_message('#PING', neighbor)
+                tcp_transmit_message('PING', '', neighbor)
                 sleep(0.2)
             except (ConnectionRefusedError, TimeoutError):
                 missed_beats += 1
-            if missed_beats > 4:                                                      # Once 5 beats have been missed
-                print(f'{missed_beats} failed pings to neighbor, remove {neighbor}')  # print to console
-                servers.remove(neighbor)                                              # remove the missing server
-                missed_beats = 0                                                      # reset the count
-                tcp_to_servers(f'#QUIT_server_0_{neighbor}')                          # inform the others
-                neighbor_was_leader = neighbor == leader_address                      # check if neighbor was leader
-                find_neighbor()                                                       # find a new neighbor
-                if neighbor_was_leader:                                               # if the neighbor was the leader
-                    print('Previous neighbor was leader, starting election')          # print to console
-                    start_voting()                                                    # start an election
+            if missed_beats > 4:                                                         # Once 5 beats have been missed
+                print(f'{missed_beats} failed pings to neighbor, remove {neighbor}')     # print to console
+                servers.remove(neighbor)                                                 # remove the missing server
+                missed_beats = 0                                                         # reset the count
+                tcp_msg_to_servers('QUIT', format_join_quit('server', False, neighbor))  # inform the others
+                neighbor_was_leader = neighbor == leader_address                         # check if neighbor was leader
+                find_neighbor()                                                          # find a new neighbor
+                if neighbor_was_leader:                                                  # if the neighbor was leader
+                    print('Previous neighbor was leader, starting election')             # print to console
+                    vote()                                                               # start an election
 
     print('Heartbeat thread closing')
     sys.exit(0)
 
 
-# Function to handle the various commands that the server can receive
-def server_command(command):
-    match command.split('_'):
-        # Sends the chat message to all clients other than the sender
-        case ['#CHAT', address_string, message]:
-            address = utility.string_to_address(address_string)
-            message_to_clients(message, address)
-        # Sets a nickname for the client
-        case ['#NICK', inform_others, address_string, nickname]:
-            address = utility.string_to_address(address_string)
-            print(f'Changing nickname of {address} to {nickname}')
-            add_nickname(address, nickname)
-            if int(inform_others):
-                message_to_clients(f'{address[0]} changed name to {nicknames[address]}')
-                message_to_servers(f'#NICK_0_{address}_{nicknames[address]}')
-        # Add the provided client to this server's clients list
-        # If the request came from the client (instead of another server) announce to the other clients
-        # and inform the other servers
-        case ['#JOIN', 'client', inform_others, address_string]:
-            address = utility.string_to_address(address_string)
-            if int(inform_others):  # Sending a 0/1 and casting to int is the easiest way I found to send bools as text
-                message_to_clients(f'{address[0]} has joined the chat')
-                message_to_servers(f'#JOIN_client_0_{address}')
-            if address not in clients:  # We NEVER want duplicates in our lists
-                print(f'Adding {address} to clients')
-                clients.append(address)
-        # Remove the provided client from this server's clients list
-        # If the request came from the client (instead of another server) announce to the other clients
-        # and inform the other servers
-        case ['#QUIT', 'client', inform_others, address_string]:
-            address = utility.string_to_address(address_string)
-            print(f'Removing {address} from clients')
+def server_command(message):
+    match message:
+        # Sends the chat message to all clients
+        # The client is responsible for not printing messages it originally sent
+        case {'command': 'CHAT', 'sender': sender, 'contents': contents}:
+            chat_message = {'chat_sender': sender, 'chat_contents': contents}
+            message_to_clients('CHAT', chat_message)
+        # Add the provided node to this server's list
+        # If the request came from the node to be added inform the other servers
+        # If the node is a server, send it the server and client lists
+        case {'command': 'JOIN',
+              'contents': {'node_type': node_type, 'inform_others': inform_others, 'address': address}}:
+            if node_type == 'server':
+                node_list = servers
+            elif node_type == 'client':
+                node_list = clients
+            else:
+                raise ValueError(f'Tried to add invalid node type: {node_type =}')
+
+            if inform_others:
+                message_to_servers('JOIN', format_join_quit(node_type, False, address))
+                if node_type == 'client':
+                    message_to_clients('SERV', f'{address[0]} has joined the chat')
+                    tcp_transmit_message('CLOCK', client_clock, address)
+                elif node_type == 'server':
+                    transmit_state(address)
+
+            if address not in node_list:  # We NEVER want duplicates in our lists
+                print(f'Adding {address} to {node_type} list')
+                node_list.append(address)
+                if node_type == 'server':
+                    find_neighbor()
+        # Remove the provided node to this server's list
+        # If the request came from the node to be removed inform the other servers
+        # If the node is a client, then inform the other clients
+        case {'command': 'QUIT',
+              'contents': {'node_type': node_type, 'inform_others': inform_others, 'address': address}}:
+            if node_type == 'server':
+                node_list = servers
+            elif node_type == 'client':
+                node_list = clients
+            else:
+                raise ValueError(f'Tried to remove invalid node type: {node_type =}')
+
+            if inform_others:
+                if node_type == 'client':
+                    message_to_clients('SERV', f'{address[0]} has left the chat')
+                message_to_servers('QUIT', format_join_quit(node_type, False, address))
             try:
-                clients.remove(address)
-                remove_nickname(address)
+                print(f'Removing {address} from {node_type} list')
+                node_list.remove(address)
+                if node_type == 'server':
+                    find_neighbor()
             except ValueError:
-                print(f'{address} was not in clients, it was likely removed by the ping')
-            if int(inform_others):
-                message_to_clients(f'{address[0]} has left the chat')
-                message_to_servers(f'#QUIT_client_0_{address}')
-        # Add the provided server to this server's servers list
-        # If the request came from the server to be added send it the whole clients and servers list
-        # and inform the other servers
-        case ['#JOIN', 'server', inform_others, address_string]:
-            address = utility.string_to_address(address_string)
-            if int(inform_others):
-                transmit_state(address)
-                message_to_servers(f'#JOIN_server_0_{address}')
-            if address not in servers:  # We NEVER want duplicates in our lists
-                print(f'Adding {address} to servers')
-                servers.append(address)
-                find_neighbor()
-        # Remove the provided server from this server's servers list
-        # If the request came from the server to be added inform the other servers
-        case ['#QUIT', 'server', inform_others, address_string]:
-            address = utility.string_to_address(address_string)
-            if address == server_address:  # If we're told to remove ourself, something is wrong
-                pass  # Will implement this later
-            else:
-                print(f'Removing {address} from servers')
-                servers.remove(address)
-                if int(inform_others):
-                    message_to_servers(f'#QUIT_server_0_{address}')
-                find_neighbor()
+                print(f'{address} was not in {node_type} list')
+        # Calls a function to import the current state from the leader
+        # This is split of for readability and to keep global overwriting of the lists out of this function
+        case {'command': 'STATE', 'contents': state}:
+            receive_state(state)
         # Receive a vote in the election
-        # If I get a vote for myself then I've won the election
-        # If not, then vote
-        case ['#VOTE', address_string]:
-            address = utility.string_to_address(address_string)
-            if address == server_address:
-                set_leader(server_address)
+        # If I get a vote for myself then I've won the election. If not, then vote
+        # If the leader has been elected then set the new leader
+        case {'command': 'VOTE', 'contents': {'vote_for': address, 'leader_elected': leader_elected}}:
+            if not leader_elected:
+                if address == server_address:
+                    set_leader(server_address)
+                else:
+                    vote(address)
             else:
-                start_voting(address)
-        # Declaration that another server is the leader
-        case ['#LEAD', address_string]:
-            address = utility.string_to_address(address_string)
-            if address != server_address:
-                set_leader(address)
-                message = f'#LEAD_{leader_address}'
-                tcp_transmit_message(message, neighbor)
-        case ['#DOWN', inform_others]:
-            if int(inform_others):
-                # tcp_to_servers('#DOWN_0')
-                message_to_clients('#DOWN')
-                message_to_servers('#DOWN_0')
+                if address != server_address:
+                    set_leader(address)
+                    tcp_transmit_message('VOTE', {'vote_for': address, 'leader_elected': True}, neighbor)
+        # Replies with the requested message to the requesting server
+        case {'command': 'MSG', 'contents': {'list': list_type, 'clock': msg_clock}, 'sender': address}:
+            if list_type == 'server':
+                multi_msgs = server_multi_msgs
+            elif list_type == 'client':
+                multi_msgs = client_multi_msgs
+            else:
+                ValueError(f'Message requested from invalid list, {list_type =}')
+
+            message = multi_msgs[str(msg_clock[0])]
+            print(f'{message =}')
+            tcp_transmit_message(message['command'], message['contents'], address)
+        # Either shutdown just this server (for testing leader election)
+        # Or shutdown the whole chatroom
+        case {'command': 'DOWN', 'contents': inform_others}:
+            if inform_others:
+                tcp_msg_to_clients('DOWN')
+                tcp_msg_to_servers('DOWN')
             print(f'Shutting down server at {server_address}')
             global is_active
             is_active = False
+
+
+def message_to_servers(command, contents=''):
+    multicast_transmit_message(command, contents, utility.MG_SERVER)
+
+
+# Sends message to all servers
+def tcp_msg_to_servers(command, contents=''):
+    for server in [s for s in servers if s != server_address]:
+        try:
+            tcp_transmit_message(command, contents, server)
+        except (ConnectionRefusedError, TimeoutError):
+            print(f'Unable to send to {server}')
+
+
+# Transmits the current server and client lists from the leader to the new server
+# Will be expanded later for clocks
+def transmit_state(address):
+    state = {'servers': servers, 'clients': clients,
+             'server_clock': server_clock, 'client_clock': client_clock,
+             'server_multi_msgs': server_multi_msgs, 'client_multi_msgs': client_multi_msgs}
+    tcp_transmit_message('STATE', state, address)
+
+
+# Receives the current server and client lists from the leader
+# Will be expanded later for clocks
+def receive_state(state):
+    global servers, clients, server_clock, client_clock, server_multi_msgs, client_multi_msgs
+
+    servers = [server_address]        # Clear the server list (except for this server)
+    servers.extend(state["servers"])  # Add the received list to the servers
+    servers = list(set(servers))      # Remove any duplicates
+    find_neighbor()                   # Find neighbor (also takes care of sorting)
+
+    clients = []                      # Clear the client list
+    clients.extend(state["clients"])  # Add the received list to the clients
+    clients = list(set(clients))      # Remove any duplicates
+
+    server_clock[0] = state["server_clock"][0]
+    client_clock[0] = state["client_clock"][0]
+
+    server_multi_msgs = state["server_multi_msgs"]
+    client_multi_msgs = state["client_multi_msgs"]
+
+
+def message_to_clients(command, contents=''):
+    multicast_transmit_message(command, contents, utility.MG_CLIENT)
+
+
+# Sends message to all clients
+def tcp_msg_to_clients(command, contents=''):
+    # This lets us iterate through the list even if we remove an element partway through
+    client_list = list(clients)
+    for client in client_list:
+        try:
+            tcp_transmit_message(command, contents, client)
+        except (ConnectionRefusedError, TimeoutError):
+            print(f'Unable to send to {client}')
+            ping_clients(client)
 
 
 # If a specific client is provided, ping that client
@@ -327,81 +426,31 @@ def ping_clients(client_to_ping=None):
         to_ping = [client_to_ping]
     else:
         to_ping = clients
+
     for client in to_ping:
         try:
-            utility.tcp_transmit_message('#PING', client)
+            tcp_transmit_message('PING', '', client)
         except (ConnectionRefusedError, TimeoutError):  # If we can't connect to a client, then drop it
             print(f'Failed send to {client}')
             print(f'Removing {client} from clients')
             try:
                 clients.remove(client)
-                remove_nickname(client)
-                message_to_servers(f'#QUIT_client_0_{client}')
-                message_to_clients(f'{client[0]} is unreachable')
+                message_to_servers('QUIT', format_join_quit('client', False, client))
+                message_to_clients('SERV', f'{client[0]} is unreachable')
             except ValueError:
                 print(f'{client} was not in clients')
 
 
-# Sends message to all clients, specifying who the sender is
-# If the message is "purely" a server message, then the server is the sender
-def message_to_clients(message, sender=server_address):
-    to_send = message
-    if message[0] != '#':
-        to_send += f'_{sender}_{nicknames[sender] if sender in nicknames else ""}'
-    multicast_transmit_message(to_send, utility.MG_CLIENT)
-
-
-# Adds a nickname to the dictionary. If the nickname already exists, then appends the client's ip
-def add_nickname(address, nickname):
-    if nickname in nicknames.values():
-        nicknames[address] = f'{nickname} ({address[0]})'
-    else:
-        nicknames[address] = nickname
-
-
-# Removes a nickname from the dictionary
-def remove_nickname(address):
-    try:
-        del nicknames[address]
-    except KeyError:
-        pass
-
-
-# Sends a multicast message to all servers
-def message_to_servers(message):
-    multicast_transmit_message(message, utility.MG_SERVER)
-
-
-def tcp_to_servers(message):
-    for server in [s for s in servers if s != server_address]:
-        try:
-            tcp_transmit_message(message, server)
-        except (ConnectionRefusedError, TimeoutError):
-            print(f'Unable to send to {server}')
-
-
-# Transmits the whole clients and servers lists to the provided address
-def transmit_state(address):
-    for client in clients:
-        tcp_transmit_message(f'#JOIN_client_0_{client}', address)
-    for server in servers:
-        tcp_transmit_message(f'#JOIN_server_0_{server}', address)
-
-
-# Sends message to address and prints to the console
-def tcp_transmit_message(message, address):
-    print(f'Send "{message}" to {address}')
-    utility.tcp_transmit_message(message, address)
+def tcp_transmit_message(command, contents, address):
+    if command != 'PING':
+        print(f'Sending command {command} to {address}')
+    message_bytes = encode_message(command, server_address, contents)
+    utility.tcp_transmit_message(message_bytes, address)
 
 
 """
 Voting is implemented with the find_neighbor, start_voting, and set_leader functions
-The voting algorithm is the Chang and Roberts algorithm
-https://en.wikipedia.org/wiki/Chang_and_Roberts_algorithm
-
-
-I might try to change to a more efficient voting algorithm
-Details here: J. Villadangos, A. Cordoba, F. Farina and M. Prieto, "Efficient leader election in complete networks"
+The voting algorithm is the LaLann-Chang-Roberts algorithm
 """
 
 
@@ -426,32 +475,28 @@ def find_neighbor():
 # If we're the only server, win automatically
 # If we're the first server to vote, this will start the whole election
 # and we just vote for ourself
-# Otherwise, we vote for the min out of our address and the vote we received
-def start_voting(address=server_address):
+# Otherwise, we vote for the max out of our address and the vote we received
+def vote(address=server_address):
     if not neighbor:
         set_leader(server_address)
         return
     global is_voting
-    vote_for = min(address, server_address)
+    vote_for = max(address, server_address)
     if vote_for != server_address or not is_voting:
-        message = f'#VOTE_{vote_for}'
-        tcp_transmit_message(message, neighbor)
+        tcp_transmit_message('VOTE', {'vote_for': vote_for, 'leader_elected': False}, neighbor)
     is_voting = True
 
 
-# Set the leader
-# If I'm the leader, tell the clients and other servers
 def set_leader(address):
     global leader_address, is_leader, is_voting
     leader_address = address
-    is_leader = server_address == address
+    is_leader = leader_address == server_address
     is_voting = False
     if is_leader:
         print('I am the leader')
-        message = f'#LEAD_{server_address}'
-        message_to_clients(message)
+        message_to_clients('LEAD')
         if neighbor:
-            tcp_transmit_message(message, neighbor)
+            tcp_transmit_message('VOTE', {'vote_for': server_address, 'leader_elected': True}, neighbor)
     else:
         print(f'The leader is {leader_address}')
 
