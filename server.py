@@ -3,7 +3,7 @@
 import socket
 import sys
 import threading
-from utility_new import BUFFER_SIZE, encode_message, decode_message, format_join_quit
+from utility import BUFFER_SIZE, encode_message, decode_message, format_join_quit
 import utility
 from time import sleep
 

@@ -4,8 +4,8 @@ import threading
 import sys
 from time import sleep
 
-from utility_new import BUFFER_SIZE, encode_message, decode_message, format_join_quit
-import utility_new as utility
+from utility import BUFFER_SIZE, encode_message, decode_message, format_join_quit
+import utility
 
 # Create TCP socket for listening to unicast messages
 # The address tuple of this socket is the unique identifier for the client
