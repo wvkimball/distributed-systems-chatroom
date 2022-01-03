@@ -139,11 +139,15 @@ def multicast_listener(group):
             m_listener_socket.sendto(b'ack', address)
 
             clock[0] += 1
-
+            # Causal ordering doesn't really matter here.
+            # Just has to be reliable
             for i in range(clock[0], message['clock'][0]):
                 print(f'Requesting missing {name} message with clock {i}')
                 tcp_transmit_message('MSG', {'list': name, 'clock': [i]}, message['sender'])
+                clock[0] += 1
 
+            if clock[0] != message['clock'][0]:
+                raise ValueError(f'Clock is not correct, {clock =}')
             multi_msgs[str(clock[0])] = {'command': message["command"], 'contents': message["contents"]}
             if len(multi_msgs) > keep_msgs:
                 multi_msgs.pop(next(iter(multi_msgs)))
