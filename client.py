@@ -64,6 +64,12 @@ def transmit_messages():
     while is_active:
         message = input('\rYou: ')
 
+        # This clears the just entered message from the chat using escape characters
+        # Basic idea from here:
+        # https://stackoverflow.com/questions/44565704/how-to-clear-only-last-one-line-in-python-output-console
+        # I don't know why this doesn't work with messages that start with #
+        print(f'\033[A{" " * len(message)}\033[A')
+
         # If the flag has been changed while waiting for input, we exit
         if not is_active:
             sys.exit(0)
@@ -112,9 +118,15 @@ def multicast_listener():
             m_listener_socket.sendto(b'ack', address)
 
             clock[0] += 1
-            for i in range(clock[0], message['clock'][0]):
-                message_to_server('MSG', {'list': 'client', 'clock': [i]})
+            if clock[0] < message['clock'][0]:
+                for i in range(clock[0], message['clock'][0]):
+                    message_to_server('MSG', {'list': 'client', 'clock': [i]})
+                    clock[0] += 1
+                # This sleep allows the server time to send the missing messages
+                sleep(0.5)
 
+            if clock[0] != message['clock'][0]:
+                raise ValueError(f'Clock is not correct, {clock =}')
             server_command(message)
 
     m_listener_socket.close()
@@ -153,6 +165,9 @@ def server_command(message):
         case {'command': 'CHAT', 'contents': {'chat_sender': address, 'chat_contents': chat_contents}}:
             if address != client_address:
                 print(f'\r{address[0]}: {chat_contents}')
+                print('\rYou: ' if is_active else '', end='')
+            elif address == client_address:
+                print(f'\rYou: {chat_contents}')
                 print('\rYou: ' if is_active else '', end='')
         case {'command': 'SERV'}:
             print(f'\r{message["contents"]}')
