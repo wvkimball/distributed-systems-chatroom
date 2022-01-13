@@ -36,6 +36,7 @@ client_multi_msgs = {}
 # How many messages we want to store in the dictionaries
 keep_msgs = 5
 
+
 def main():
     utility.cls()
     startup_broadcast()
@@ -254,6 +255,8 @@ def heartbeat():
                 sleep(0.2)
             except (ConnectionRefusedError, TimeoutError):
                 missed_beats += 1
+            else:
+                missed_beats = 0
             if missed_beats > 4:                                                         # Once 5 beats have been missed
                 print(f'{missed_beats} failed pings to neighbor, remove {neighbor}')     # print to console
                 servers.remove(neighbor)                                                 # remove the missing server
