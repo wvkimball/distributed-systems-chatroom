@@ -20,6 +20,7 @@ is_active = True
 
 clock = [0]
 
+
 def main():
     utility.cls()
     broadcast_for_server()
@@ -67,8 +68,7 @@ def transmit_messages():
         # This clears the just entered message from the chat using escape characters
         # Basic idea from here:
         # https://stackoverflow.com/questions/44565704/how-to-clear-only-last-one-line-in-python-output-console
-        # I don't know why this doesn't work with messages that start with #
-        print(f'\033[A{" " * len(message)}\033[A')
+        print(f'\033[A{" " * (len("You: " + message))}\033[A')
 
         # If the flag has been changed while waiting for input, we exit
         if not is_active:
