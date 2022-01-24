@@ -134,14 +134,17 @@ def multicast_listener():
 
 
 # Sends a message to the server
-# If the server isn't there, the client starts searching again
+# If no server is there, shutdown
 def message_to_server(command, contents):
     message_bytes = encode_message(command, client_address, contents)
     try:
         utility.tcp_transmit_message(message_bytes, server_address)
     except (ConnectionRefusedError, TimeoutError):
-        print('\rError sending message, searching for server again')
-        broadcast_for_server()
+        # print('\rError sending message, searching for server again')
+        # broadcast_for_server()
+        print('\rError sending message, server is unreachable')
+        down()
+        print('\rProgram is shutting down.')
 
 
 # Handle commands entered by this client
